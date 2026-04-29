@@ -17,7 +17,7 @@
    ===================================================== */
 
 // ⬇️ CHANGE THIS NUMBER when you deploy an update (e.g. v2, v3, ...)
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v1.1';
 const CACHE_NAME    = 'timesheet-pwa-' + CACHE_VERSION;
 
 // These are all the files we want to cache for offline use.
