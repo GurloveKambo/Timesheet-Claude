@@ -1,0 +1,776 @@
+/* =====================================================
+   TIMESHEET PWA — STYLESHEET
+   Mobile-first design: phones look great by default,
+   then we add styles for bigger screens at the bottom.
+   ===================================================== */
+
+/* ----- FONTS ----- */
+/* Importing a clean, readable font from Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
+
+/* ----- DESIGN TOKENS (easy to change colours/sizes) ----- */
+:root {
+  --color-primary:    #1a3a5c;   /* Dark navy blue — main brand colour */
+  --color-accent:     #f08c2f;   /* Orange — buttons, highlights */
+  --color-accent2:    #27ae60;   /* Green — success states */
+  --color-danger:     #e74c3c;   /* Red — errors */
+  --color-bg:         #f0f2f5;   /* Light grey page background */
+  --color-card:       #ffffff;   /* White card background */
+  --color-text:       #1e2a38;   /* Main text colour */
+  --color-muted:      #6b7a8d;   /* Secondary/hint text */
+  --color-border:     #d4dae3;   /* Input borders */
+  --color-tab-active: #1a3a5c;   /* Active tab colour */
+
+  --radius:    12px;   /* Rounded corners on cards */
+  --radius-sm: 8px;    /* Smaller rounding on inputs */
+  --shadow:    0 2px 12px rgba(0,0,0,0.08);  /* Subtle card shadow */
+
+  --font-main: 'DM Sans', sans-serif;
+  --font-mono: 'DM Mono', monospace;
+}
+
+/* ----- RESET & BASE ----- */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%; /* Prevents iOS from zooming text */
+}
+
+body {
+  font-family: var(--font-main);
+  background: var(--color-bg);
+  color: var(--color-text);
+  min-height: 100vh;
+  /* Bottom padding so content isn't hidden behind the tab bar on some phones */
+  padding-bottom: 40px;
+}
+
+/* ----- UPDATE BANNER ----- */
+/* Shown when a new version of the app is ready */
+.update-banner {
+  background: var(--color-accent);
+  color: white;
+  text-align: center;
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.update-banner button {
+  background: white;
+  color: var(--color-accent);
+  border: none;
+  border-radius: 20px;
+  padding: 4px 14px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: var(--font-main);
+}
+
+/* ----- APP HEADER ----- */
+.app-header {
+  background: var(--color-primary);
+  color: white;
+  padding: 0 16px;
+  position: sticky;
+  top: 0;
+  z-index: 99;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+
+.header-inner {
+  max-width: 700px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+}
+
+.logo-area {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo-icon {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.app-header h1 {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.header-sub {
+  font-size: 12px;
+  opacity: 0.75;
+  font-weight: 400;
+}
+
+.save-btn {
+  background: rgba(255,255,255,0.15);
+  border: 1px solid rgba(255,255,255,0.3);
+  color: white;
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  font-family: var(--font-main);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+  white-space: nowrap;
+}
+
+.save-btn:hover, .save-btn:active {
+  background: rgba(255,255,255,0.25);
+}
+
+/* ----- MAIN CONTENT AREA ----- */
+.app-main {
+  max-width: 700px;
+  margin: 0 auto;
+  padding: 0 12px;
+}
+
+/* ----- TAB NAVIGATION ----- */
+.tab-nav {
+  display: flex;
+  gap: 4px;
+  padding: 12px 0 0;
+  overflow-x: auto; /* Allows scrolling sideways on small phones */
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none; /* Hides the scrollbar on Firefox */
+}
+
+.tab-nav::-webkit-scrollbar {
+  display: none; /* Hides the scrollbar on Chrome/Safari */
+}
+
+.tab-btn {
+  flex: 0 0 auto;
+  background: var(--color-card);
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  border-bottom: none;
+  padding: 8px 14px;
+  font-family: var(--font-main);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-muted);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  transition: all 0.2s;
+  min-width: 64px;
+}
+
+.tab-btn.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: white;
+}
+
+.tab-icon {
+  font-size: 16px;
+}
+
+/* ----- TAB PANELS ----- */
+.tab-panel {
+  display: none;
+  padding-top: 0;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+/* ----- SECTION CARDS ----- */
+/* Each "card" is a white box holding related form fields */
+.section-card {
+  background: var(--color-card);
+  border-radius: 0 var(--radius) var(--radius) var(--radius);
+  padding: 20px 16px;
+  margin-bottom: 12px;
+  box-shadow: var(--shadow);
+  border: 1px solid var(--color-border);
+  border-top-left-radius: 0;
+}
+
+/* The first card on the first tab has no left-rounded top */
+.tab-panel.active .section-card:first-child {
+  border-top-left-radius: 0;
+}
+
+.section-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--color-primary);
+  margin-bottom: 16px;
+  padding-bottom: 10px;
+  border-bottom: 2px solid var(--color-bg);
+}
+
+/* ----- FORM ELEMENTS ----- */
+.form-group {
+  margin-bottom: 14px;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: 5px;
+}
+
+/* The little red asterisk on required fields */
+.required {
+  color: var(--color-danger);
+}
+
+input[type="text"],
+input[type="email"],
+input[type="number"],
+input[type="date"],
+input[type="file"],
+select,
+textarea {
+  width: 100%;
+  padding: 12px 14px;
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-main);
+  font-size: 15px;
+  color: var(--color-text);
+  background: #fafbfc;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  /* Makes the touch tap area nice and large on mobile */
+  min-height: 48px;
+}
+
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(26,58,92,0.1);
+  background: white;
+}
+
+input[type="file"] {
+  padding: 10px;
+  cursor: pointer;
+}
+
+/* Show which field has an error */
+input.error, select.error {
+  border-color: var(--color-danger);
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--color-muted);
+  margin-top: 4px;
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+/* ----- RADIO BUTTONS ----- */
+.radio-group {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.radio-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  margin-bottom: 0;
+}
+
+.radio-label input[type="radio"] {
+  width: 18px;
+  height: 18px;
+  min-height: unset;
+  cursor: pointer;
+  accent-color: var(--color-primary);
+}
+
+/* ----- DAILY HOURS TABLE ----- */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0 -4px;
+}
+
+.hours-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 320px;
+}
+
+.hours-table th {
+  background: var(--color-primary);
+  color: white;
+  padding: 10px 8px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.hours-table td {
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--color-bg);
+  vertical-align: middle;
+}
+
+/* Weekend rows get a subtle background */
+.hours-table tr.weekend td {
+  background: #f8f0ff;
+}
+
+.hours-table input {
+  min-height: 36px;
+  padding: 6px 8px;
+  font-size: 14px;
+}
+
+.day-label {
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--color-text);
+}
+
+.date-label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.total-row {
+  text-align: right;
+  padding: 12px 4px 4px;
+  font-size: 15px;
+  color: var(--color-text);
+  border-top: 2px solid var(--color-primary);
+  margin-top: 4px;
+}
+
+.total-row strong {
+  color: var(--color-primary);
+  font-size: 18px;
+}
+
+/* ----- ADDED ITEMS (expenses, mileage, allowances) ----- */
+.added-item {
+  background: #f0f7ff;
+  border: 1px solid #c5daf5;
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  position: relative;
+}
+
+.added-item .item-title {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--color-primary);
+  margin-bottom: 4px;
+}
+
+.added-item .item-detail {
+  font-size: 13px;
+  color: var(--color-muted);
+  line-height: 1.5;
+}
+
+.added-item .item-amount {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--color-accent2);
+  margin-top: 4px;
+}
+
+.added-item .remove-btn {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  background: none;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  color: var(--color-danger);
+  padding: 4px;
+  line-height: 1;
+}
+
+/* Badge showing if receipt is attached */
+.receipt-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.receipt-badge.yes {
+  background: #d4edda;
+  color: #155724;
+}
+
+.receipt-badge.no {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+/* ----- ADD ITEM FORMS ----- */
+.add-item-form {
+  background: #f8fafd;
+  border: 2px dashed var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  margin-top: 12px;
+}
+
+.add-item-form h3 {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-primary);
+  margin-bottom: 12px;
+}
+
+/* ----- CALCULATED TOTAL (mileage) ----- */
+.calculated-total {
+  background: var(--color-primary);
+  color: white;
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  font-size: 15px;
+  font-weight: 500;
+  margin-bottom: 14px;
+  text-align: center;
+}
+
+.calculated-total strong {
+  font-size: 20px;
+  font-family: var(--font-mono);
+}
+
+/* ----- BUTTONS ----- */
+/* All buttons are large for easy tapping on mobile */
+.btn-add {
+  width: 100%;
+  background: var(--color-primary);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 14px;
+  font-family: var(--font-main);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+  min-height: 48px;
+}
+
+.btn-add:hover { background: #254d7a; }
+.btn-add:active { transform: scale(0.98); }
+
+.btn-submit {
+  width: 100%;
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  font-family: var(--font-main);
+  font-size: 17px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+  min-height: 56px;
+  box-shadow: 0 4px 16px rgba(240,140,47,0.35);
+}
+
+.btn-submit:hover { background: #d97a20; }
+.btn-submit:active { transform: scale(0.98); }
+
+/* Next / Back navigation buttons */
+.nav-buttons {
+  display: flex;
+  gap: 10px;
+  margin: 8px 0 16px;
+}
+
+.btn-next, .btn-back {
+  flex: 1;
+  padding: 14px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-main);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  min-height: 48px;
+  transition: all 0.2s;
+}
+
+.btn-next {
+  background: var(--color-primary);
+  color: white;
+  border: none;
+}
+
+.btn-next:hover { background: #254d7a; }
+
+.btn-back {
+  background: white;
+  color: var(--color-primary);
+  border: 2px solid var(--color-primary);
+}
+
+.btn-back:hover { background: #f0f4f8; }
+
+/* ----- REVIEW SECTION ----- */
+.review-block {
+  margin-bottom: 20px;
+}
+
+.review-block h3 {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-primary);
+  background: #eef2f7;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  margin-bottom: 0;
+}
+
+.review-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  border: 1px solid var(--color-border);
+  border-top: none;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  overflow: hidden;
+}
+
+.review-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-bg);
+  vertical-align: top;
+}
+
+.review-table td:first-child {
+  font-weight: 600;
+  color: var(--color-muted);
+  width: 40%;
+  white-space: nowrap;
+}
+
+.review-table tr:last-child td {
+  border-bottom: none;
+}
+
+.review-total {
+  background: var(--color-primary);
+  color: white;
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 700;
+  font-size: 16px;
+  margin-top: 12px;
+}
+
+.review-total span:last-child {
+  font-size: 20px;
+  font-family: var(--font-mono);
+}
+
+/* ----- SUBMIT AREA ----- */
+.submit-area {
+  background: var(--color-card);
+  border-radius: var(--radius);
+  padding: 20px 16px;
+  margin-bottom: 12px;
+  box-shadow: var(--shadow);
+}
+
+.submit-note {
+  font-size: 13px;
+  color: var(--color-muted);
+  margin-bottom: 16px;
+  line-height: 1.7;
+}
+
+/* ----- SUCCESS SCREEN ----- */
+.success-screen {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 200;
+  backdrop-filter: blur(4px);
+}
+
+.success-card {
+  background: white;
+  border-radius: 20px;
+  padding: 32px 24px;
+  text-align: center;
+  max-width: 400px;
+  width: 100%;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+}
+
+.success-icon {
+  font-size: 56px;
+  margin-bottom: 16px;
+  line-height: 1;
+}
+
+.success-card h2 {
+  font-size: 22px;
+  color: var(--color-primary);
+  margin-bottom: 10px;
+}
+
+.success-card p {
+  font-size: 14px;
+  color: var(--color-text);
+  margin-bottom: 6px;
+  line-height: 1.6;
+}
+
+.success-sub {
+  color: var(--color-muted) !important;
+  font-size: 13px !important;
+}
+
+.success-note {
+  background: #f0f7ff;
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  margin: 16px 0;
+  font-size: 13px;
+  color: var(--color-muted);
+  word-break: break-all;
+}
+
+/* ----- TOAST NOTIFICATION ----- */
+/* Pops up briefly to show error or success messages */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--color-text);
+  color: white;
+  padding: 14px 20px;
+  border-radius: 50px;
+  font-size: 14px;
+  font-weight: 600;
+  z-index: 300;
+  max-width: calc(100vw - 32px);
+  text-align: center;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+  transition: opacity 0.3s;
+}
+
+.toast.error { background: var(--color-danger); }
+.toast.success { background: var(--color-accent2); }
+
+/* ----- UTILITY CLASSES ----- */
+.hidden { display: none !important; }
+
+/* ----- VALIDATION ERROR MESSAGES ----- */
+.field-error {
+  color: var(--color-danger);
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 4px;
+  display: block;
+}
+
+/* ----- EMPTY STATE (when no items added yet) ----- */
+.empty-state {
+  text-align: center;
+  padding: 20px;
+  color: var(--color-muted);
+  font-size: 14px;
+  background: #fafbfc;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--color-border);
+  margin-bottom: 12px;
+}
+
+/* ----- LARGER SCREENS (tablets, desktops) ----- */
+/* On bigger screens, we can use more space */
+@media (min-width: 640px) {
+  .app-main {
+    padding: 0 20px;
+  }
+
+  .section-card {
+    padding: 24px 24px;
+  }
+
+  .section-title {
+    font-size: 18px;
+  }
+
+  .tab-btn {
+    flex-direction: row;
+    gap: 6px;
+    padding: 10px 18px;
+    font-size: 13px;
+    min-width: auto;
+  }
+
+  .hours-table {
+    font-size: 14px;
+  }
+}
+
+/* Reduce motion for people who prefer it (accessibility) */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

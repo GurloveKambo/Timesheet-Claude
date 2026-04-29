@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <!-- This makes the app look correct on mobile phones -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Timesheet & Expenses</title>
+
+  <!-- PWA: Tells the browser this can be installed as an app -->
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#1a3a5c" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Timesheet" />
+
+  <!-- App icons for iOS home screen -->
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+
+  <!-- jsPDF: A library that creates PDF files in the browser (no server needed) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ===== UPDATE BANNER ===== -->
+  <!-- This bar appears when a new version of the app is available -->
+  <div id="update-banner" class="update-banner hidden">
+    🔄 A new version is available.
+    <button onclick="applyUpdate()">Update Now</button>
+  </div>
+
+  <!-- ===== APP HEADER ===== -->
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="logo-area">
+        <!-- Replace this emoji with your company logo image if you want -->
+        <span class="logo-icon">🏗️</span>
+        <div>
+          <h1>Field Timesheet</h1>
+          <p class="header-sub">Fortnight Submission</p>
+        </div>
+      </div>
+      <button class="save-btn" onclick="saveProgress()" title="Save progress locally">
+        💾 Save
+      </button>
+    </div>
+  </header>
+
+  <!-- ===== MAIN APP CONTAINER ===== -->
+  <main class="app-main">
+
+    <!-- ===== STEP TABS (navigation between sections) ===== -->
+    <nav class="tab-nav" role="tablist">
+      <button class="tab-btn active" data-tab="tab-timesheet" onclick="switchTab(this)" role="tab">
+        <span class="tab-icon">🗓️</span>
+        <span>Timesheet</span>
+      </button>
+      <button class="tab-btn" data-tab="tab-expenses" onclick="switchTab(this)" role="tab">
+        <span class="tab-icon">🧾</span>
+        <span>Expenses</span>
+      </button>
+      <button class="tab-btn" data-tab="tab-mileage" onclick="switchTab(this)" role="tab">
+        <span class="tab-icon">🚗</span>
+        <span>Mileage</span>
+      </button>
+      <button class="tab-btn" data-tab="tab-allowances" onclick="switchTab(this)" role="tab">
+        <span class="tab-icon">⭐</span>
+        <span>Allowances</span>
+      </button>
+      <button class="tab-btn" data-tab="tab-review" onclick="switchTab(this)" role="tab">
+        <span class="tab-icon">✅</span>
+        <span>Review</span>
+      </button>
+    </nav>
+
+    <!-- ===== TAB 1: TIMESHEET ===== -->
+    <section id="tab-timesheet" class="tab-panel active" role="tabpanel">
+      <div class="section-card">
+        <h2 class="section-title">📋 Employee Details</h2>
+
+        <div class="form-group">
+          <label for="employee-name">Employee Name <span class="required">*</span></label>
+          <input type="text" id="employee-name" placeholder="e.g. Jane Smith" autocomplete="name" />
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="fortnight-from">Fortnight From <span class="required">*</span></label>
+            <input type="date" id="fortnight-from" onchange="buildDailyTable()" />
+          </div>
+          <div class="form-group">
+            <label for="fortnight-to">Fortnight To <span class="required">*</span></label>
+            <input type="date" id="fortnight-to" onchange="buildDailyTable()" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Job Reference <span class="required">*</span></label>
+          <div class="radio-group">
+            <label class="radio-label">
+              <input type="radio" name="job-ref-type" value="client" checked onchange="toggleJobRef()" />
+              Client Name
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="job-ref-type" value="address" onchange="toggleJobRef()" />
+              Job Address
+            </label>
+          </div>
+          <input type="text" id="job-client" placeholder="e.g. Acme Construction" />
+          <input type="text" id="job-address" placeholder="e.g. 42 Main St, Hobart" class="hidden" />
+        </div>
+      </div>
+
+      <!-- Daily hours table — built automatically when dates are chosen -->
+      <div class="section-card" id="daily-table-card" style="display:none">
+        <h2 class="section-title">⏱️ Daily Hours</h2>
+        <p class="hint">Enter hours worked each day. Leave blank for days off.</p>
+        <div class="table-scroll">
+          <table class="hours-table" id="daily-hours-table">
+            <thead>
+              <tr>
+                <th>Day</th>
+                <th>Date</th>
+                <th>Hours</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody id="daily-hours-body">
+              <!-- Rows are added by JavaScript -->
+            </tbody>
+          </table>
+        </div>
+        <div class="total-row">
+          Total Hours: <strong id="total-hours">0</strong>
+        </div>
+      </div>
+
+      <div class="nav-buttons">
+        <button class="btn-next" onclick="switchTabById('tab-expenses')">Next: Expenses →</button>
+      </div>
+    </section>
+
+    <!-- ===== TAB 2: EXPENSES ===== -->
+    <section id="tab-expenses" class="tab-panel" role="tabpanel">
+      <div class="section-card">
+        <h2 class="section-title">🧾 Expense Claims</h2>
+        <p class="hint">Add each expense separately. A receipt photo is required for each one.</p>
+
+        <!-- List of added expenses -->
+        <div id="expense-list"></div>
+
+        <!-- Form to add a new expense -->
+        <div class="add-item-form" id="expense-form">
+          <h3>Add Expense</h3>
+
+          <div class="form-group">
+            <label for="exp-type">Expense Type <span class="required">*</span></label>
+            <select id="exp-type">
+              <option value="">-- Select type --</option>
+              <option>Materials / Supplies</option>
+              <option>Tools / Equipment</option>
+              <option>Parking</option>
+              <option>Accommodation</option>
+              <option>Meals</option>
+              <option>Phone / Internet</option>
+              <option>Other</option>
+            </select>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="exp-amount">Amount ($) <span class="required">*</span></label>
+              <input type="number" id="exp-amount" placeholder="0.00" min="0" step="0.01" />
+            </div>
+            <div class="form-group">
+              <label for="exp-date">Date <span class="required">*</span></label>
+              <input type="date" id="exp-date" />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="exp-desc">Description</label>
+            <input type="text" id="exp-desc" placeholder="Brief description of the expense" />
+          </div>
+
+          <div class="form-group">
+            <label for="exp-receipt">Receipt Photo/File <span class="required">*</span></label>
+            <!-- accept="image/*" means only images; you can also add ,application/pdf for PDFs -->
+            <input type="file" id="exp-receipt" accept="image/*,application/pdf" capture="environment" />
+            <span class="hint">Take a photo or upload a file of your receipt</span>
+          </div>
+
+          <button class="btn-add" onclick="addExpense()">+ Add This Expense</button>
+        </div>
+      </div>
+
+      <div class="nav-buttons">
+        <button class="btn-back" onclick="switchTabById('tab-timesheet')">← Back</button>
+        <button class="btn-next" onclick="switchTabById('tab-mileage')">Next: Mileage →</button>
+      </div>
+    </section>
+
+    <!-- ===== TAB 3: MILEAGE ===== -->
+    <section id="tab-mileage" class="tab-panel" role="tabpanel">
+      <div class="section-card">
+        <h2 class="section-title">🚗 Mileage Claims</h2>
+        <p class="hint">Log each trip separately. Distance × Rate = Total.</p>
+
+        <div id="mileage-list"></div>
+
+        <div class="add-item-form" id="mileage-form">
+          <h3>Add Trip</h3>
+
+          <div class="form-group">
+            <label for="mil-date">Date <span class="required">*</span></label>
+            <input type="date" id="mil-date" />
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="mil-from">From <span class="required">*</span></label>
+              <input type="text" id="mil-from" placeholder="e.g. Home / Hobart CBD" />
+            </div>
+            <div class="form-group">
+              <label for="mil-to">To <span class="required">*</span></label>
+              <input type="text" id="mil-to" placeholder="e.g. Site / Kingston" />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="mil-km">Distance (km) <span class="required">*</span></label>
+              <input type="number" id="mil-km" placeholder="0" min="0" step="0.1" oninput="calcMileageTotal()" />
+            </div>
+            <div class="form-group">
+              <label for="mil-rate">Rate ($/km)</label>
+              <!-- Default ATO rate — user can change it -->
+              <input type="number" id="mil-rate" value="0.88" min="0" step="0.01" oninput="calcMileageTotal()" />
+            </div>
+          </div>
+
+          <div class="calculated-total">
+            Trip Total: <strong id="mil-total">$0.00</strong>
+          </div>
+
+          <button class="btn-add" onclick="addMileage()">+ Add This Trip</button>
+        </div>
+      </div>
+
+      <div class="nav-buttons">
+        <button class="btn-back" onclick="switchTabById('tab-expenses')">← Back</button>
+        <button class="btn-next" onclick="switchTabById('tab-allowances')">Next: Allowances →</button>
+      </div>
+    </section>
+
+    <!-- ===== TAB 4: ALLOWANCES ===== -->
+    <section id="tab-allowances" class="tab-panel" role="tabpanel">
+      <div class="section-card">
+        <h2 class="section-title">⭐ Allowances</h2>
+        <p class="hint">Optional. Add any special allowances applicable to this fortnight.</p>
+
+        <div id="allowance-list"></div>
+
+        <div class="add-item-form" id="allowance-form">
+          <h3>Add Allowance</h3>
+
+          <div class="form-group">
+            <label for="all-type">Allowance Type <span class="required">*</span></label>
+            <select id="all-type">
+              <option value="">-- Select type --</option>
+              <option>Travel Allowance</option>
+              <option>Site Allowance</option>
+              <option>Tool Allowance</option>
+              <option>Meal Allowance</option>
+              <option>Height / Danger Allowance</option>
+              <option>First Aid Allowance</option>
+              <option>Other</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="all-amount">Amount ($) <span class="required">*</span></label>
+            <input type="number" id="all-amount" placeholder="0.00" min="0" step="0.01" />
+          </div>
+
+          <div class="form-group">
+            <label for="all-notes">Notes</label>
+            <input type="text" id="all-notes" placeholder="Any additional details" />
+          </div>
+
+          <button class="btn-add" onclick="addAllowance()">+ Add This Allowance</button>
+        </div>
+      </div>
+
+      <div class="nav-buttons">
+        <button class="btn-back" onclick="switchTabById('tab-mileage')">← Back</button>
+        <button class="btn-next" onclick="buildReview(); switchTabById('tab-review')">Review & Submit →</button>
+      </div>
+    </section>
+
+    <!-- ===== TAB 5: REVIEW & SUBMIT ===== -->
+    <section id="tab-review" class="tab-panel" role="tabpanel">
+      <div class="section-card">
+        <h2 class="section-title">✅ Review Your Submission</h2>
+        <p class="hint">Check everything looks correct before submitting.</p>
+        <!-- Review content is built by JavaScript -->
+        <div id="review-content"></div>
+      </div>
+
+      <div class="section-card">
+        <h2 class="section-title">📧 Email Settings</h2>
+        <p class="hint">Enter where this should be sent. The app will open your email app — it does NOT send automatically.</p>
+
+        <div class="form-group">
+          <label for="email-to">Send To (email address) <span class="required">*</span></label>
+          <!-- Change the default value below to your company email address -->
+          <input type="email" id="email-to" placeholder="payroll@yourcompany.com.au" value="payroll@yourcompany.com.au" />
+        </div>
+
+        <div class="form-group">
+          <label for="email-cc">CC (optional)</label>
+          <input type="email" id="email-cc" placeholder="manager@yourcompany.com.au" />
+        </div>
+      </div>
+
+      <div class="submit-area">
+        <p class="submit-note">
+          Clicking Submit will:<br/>
+          1️⃣ Generate a PDF summary<br/>
+          2️⃣ Open your email app with the PDF ready to attach<br/>
+          3️⃣ You review and send in your email app
+        </p>
+        <button class="btn-submit" onclick="submitForm()">
+          🚀 Generate PDF & Open Email
+        </button>
+      </div>
+
+      <div class="nav-buttons">
+        <button class="btn-back" onclick="switchTabById('tab-allowances')">← Back</button>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ===== SUCCESS SCREEN (shown after submission) ===== -->
+  <div id="success-screen" class="success-screen hidden">
+    <div class="success-card">
+      <div class="success-icon">🎉</div>
+      <h2>Submission Ready!</h2>
+      <p>Your PDF has been generated and your email app should have opened.</p>
+      <p class="success-sub">Please review the email, attach the PDF file, and send it.</p>
+      <div class="success-note">
+        <strong>PDF saved as:</strong><br/>
+        <span id="pdf-filename">timesheet.pdf</span>
+      </div>
+      <button class="btn-submit" onclick="startNewSubmission()">Start New Submission</button>
+    </div>
+  </div>
+
+  <!-- ===== VALIDATION ERROR TOAST ===== -->
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- Load our JavaScript logic -->
+  <script src="app.js"></script>
+</body>
+</html>
