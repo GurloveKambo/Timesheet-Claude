@@ -14,7 +14,7 @@
    ===================================================== */
 
 // ⬇️ CHANGE THIS every time you deploy an update
-const CACHE_VERSION = 'v2.2';
+const CACHE_VERSION = 'v2.3';
 const CACHE_NAME    = 'fieldsheet-' + CACHE_VERSION;
 
 // Every file the app needs to work offline.
