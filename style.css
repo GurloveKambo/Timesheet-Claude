@@ -7,43 +7,50 @@
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=Figtree:wght@400;500;600;700&display=swap');
 
 /* ── DESIGN TOKENS ── */
+
 :root {
-  /* Brand colours */
-  --navy:      #0f1f35;
-  --navy-mid:  #162842;
-  --navy-lt:   #1e3a57;
-  --navy-dim:  #8aadcc;
-  --amber:     #f59e0b;
-  --amber-lt:  #fcd34d;
-  --green:     #22c55e;
-  --green-dk:  #16a34a;
-  --red:       #ef4444;
-  --purple:    #a855f7;
+  /* ── Brand colours (NEW PALETTE) ── */
+  --graphite: #282A28;        /* Primary dark */
+  --graphite-mid: #3a3d39;
+  --graphite-lt: #4a4e49;
+  --graphite-dim: #aeb2aa;
 
-  /* Page / card colours */
-  --bg:        #f0f3f7;
-  --card:      #ffffff;
-  --border:    #dde3ec;
-  --border-dk: #b8c6d6;
-  --text:      #0f1f35;
-  --text2:     #4a5a6e;
-  --muted:     #8a9bb0;
+  --yellow: #FFC300;         /* Primary accent */
+  --yellow-soft: #FEDA6C;    /* Secondary accent */
 
-  /* Spacing & shape */
-  --r:    12px;   /* card radius */
-  --r-sm: 8px;    /* input / button radius */
+  --white: #FFFFFF;
+
+  --green: #22c55e;
+  --green-dk: #16a34a;
+  --red: #ef4444;
+  --purple: #a855f7;
+
+  /* ── Page / card colours ── */
+  --bg: #f6f6f4;
+  --card: var(--white);
+  --border: #e1e3de;
+  --border-dk: #c7cbc3;
+
+  --text: var(--graphite);
+  --text2: #5f645d;
+  --muted: #8c9189;
+
+  /* ── Spacing & shape (unchanged) ── */
+  --r: 12px;
+  --r-sm: 8px;
   --r-xs: 6px;
 
-  /* Typography */
+  /* ── Typography (unchanged) ── */
   --ff-head: 'Syne', sans-serif;
   --ff-body: 'Figtree', sans-serif;
 
-  /* Safe-area insets (filled by the browser for notch / Dynamic Island) */
-  --sat: env(safe-area-inset-top,    0px);
-  --sar: env(safe-area-inset-right,  0px);
+  /* ── Safe areas ── */
+  --sat: env(safe-area-inset-top, 0px);
+  --sar: env(safe-area-inset-right, 0px);
   --sab: env(safe-area-inset-bottom, 0px);
-  --sal: env(safe-area-inset-left,   0px);
+  --sal: env(safe-area-inset-left, 0px);
 }
+
 
 /* ── RESET ── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
