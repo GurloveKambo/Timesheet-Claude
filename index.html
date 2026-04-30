@@ -1,16 +1,17 @@
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <!-- viewport-fit=cover is essential for Dynamic Island / notch support -->
+  <!-- viewport-fit=cover is what allows us to paint behind the Dynamic Island / notch -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>VB Built — FieldSheet</title>
 
   <link rel="manifest" href="manifest.json" />
   <meta name="theme-color" content="#0f1f35" />
-  <!-- apple-mobile-web-app-capable makes it run full-screen when added to home screen -->
+  <!-- These two lines make it run full-screen when added to iOS home screen -->
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <!-- black-translucent lets our navy header extend behind the status bar -->
+  <!-- black-translucent = our dark header colour shows behind the status bar -->
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="VB Built" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
@@ -19,475 +20,517 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
+  <!-- PDF generator — runs entirely in the browser, no server needed -->
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <!-- EmailJS — sends email automatically if configured in Settings -->
+
   <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
-  <!-- ── FIXED TOP CHROME ──────────────────────────────────────
-       Everything in .top-chrome sits in a fixed block at the top.
-       It includes safe-area padding so nothing hides behind the
-       Dynamic Island, notch, or status bar.
-  ─────────────────────────────────────────────────────────── -->
-  <div class="top-chrome">
+  <!--
+    ┌─────────────────────────────────────────────────────┐
+    │  TOP CHROME                                         │
+    │  Fixed to the top of the screen.                   │
+    │  padding-top: env(safe-area-inset-top) pushes      │
+    │  everything below the Dynamic Island / notch.      │
+    └─────────────────────────────────────────────────────┘
+  -->
 
-    <!-- Banners (hidden by default, shown by JS when needed) -->
-    <div id="update-banner" class="sys-banner sys-banner--update hidden">
-      <span>🔄 New version available</span>
-      <button onclick="applyUpdate()">Update Now</button>
+  <div class="top-chrome" id="top-chrome">
+
+```
+<!-- System banners — hidden until needed -->
+<div id="update-banner" class="sys-banner sys-banner--amber hidden">
+  <span>🔄 New version available</span>
+  <button onclick="applyUpdate()">Update Now</button>
+</div>
+<div id="reminder-banner" class="sys-banner sys-banner--navy hidden">
+  <span id="reminder-text">⏰ Timesheet due</span>
+  <button onclick="dismissReminder()">✕</button>
+</div>
+
+<!-- App header row -->
+<header class="app-header">
+  <div class="header-brand">
+    <img src="icons/icon-192.png" class="brand-logo" alt="VB Built" />
+    <div>
+      <div class="brand-name">VB Built</div>
+      <div class="brand-sub" id="greeting-text">Timesheet Portal</div>
     </div>
-    <div id="reminder-banner" class="sys-banner sys-banner--reminder hidden">
-      <span id="reminder-text">⏰ Timesheet due</span>
-      <button onclick="dismissReminder()">✕</button>
-    </div>
+  </div>
+  <div class="header-actions">
+    <button class="icon-btn" onclick="saveProgress()" title="Save draft">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+        <polyline points="17 21 17 13 7 13 7 21"/>
+        <polyline points="7 3 7 8 15 8"/>
+      </svg>
+    </button>
+    <button class="icon-btn" onclick="openSettings()" title="Settings" id="settings-btn">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
+  </div>
+</header>
 
-    <!-- App Header -->
-    <header class="app-header">
-      <div class="header-brand">
-        <img src="icons/icon-192.png" class="brand-logo" alt="VB Built" />
-        <div class="brand-text">
-          <span class="brand-name">VB Built</span>
-          <span class="brand-sub" id="greeting-text">Timesheet Portal</span>
-        </div>
-      </div>
-      <div class="header-actions">
-        <button class="icon-btn" onclick="saveProgress()" title="Save draft">
-          <!-- Save icon -->
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-            <polyline points="17 21 17 13 7 13 7 21"/>
-            <polyline points="7 3 7 8 15 8"/>
-          </svg>
-        </button>
-        <button class="icon-btn" onclick="openSettings()" title="Settings">
-          <!-- Gear icon -->
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-          </svg>
-        </button>
-      </div>
-    </header>
+<!-- Fortnight date strip — shown once dates are selected -->
+<div class="fortnight-strip hidden" id="fortnight-strip">
+  <span id="fortnight-badge">—</span>
+</div>
 
-    <!-- Fortnight badge shown below header when dates are set -->
-    <div class="fortnight-strip" id="fortnight-strip" style="display:none">
-      <span id="fortnight-badge">— no fortnight selected —</span>
-    </div>
+<!-- Step navigation tabs -->
+<nav class="step-nav" role="tablist">
+  <button class="step-btn active" data-tab="tab-timesheet" onclick="switchTab(this)" role="tab" aria-selected="true">
+    <span class="step-dot">1</span>
+    <span class="step-label">Timesheet</span>
+  </button>
+  <div class="step-line"></div>
+  <button class="step-btn" data-tab="tab-expenses" onclick="switchTab(this)" role="tab">
+    <span class="step-dot">2</span>
+    <span class="step-label">Expenses</span>
+  </button>
+  <div class="step-line"></div>
+  <button class="step-btn" data-tab="tab-mileage" onclick="switchTab(this)" role="tab">
+    <span class="step-dot">3</span>
+    <span class="step-label">Mileage</span>
+  </button>
+  <div class="step-line"></div>
+  <button class="step-btn" data-tab="tab-allowances" onclick="switchTab(this)" role="tab">
+    <span class="step-dot">4</span>
+    <span class="step-label">Extras</span>
+  </button>
+  <div class="step-line"></div>
+  <button class="step-btn" data-tab="tab-review" onclick="switchTab(this)" role="tab">
+    <span class="step-dot">5</span>
+    <span class="step-label">Submit</span>
+  </button>
+</nav>
+```
 
-    <!-- Step tab bar -->
-    <nav class="step-nav" role="tablist">
-      <button class="step-btn active" data-tab="tab-timesheet" onclick="switchTab(this)" role="tab">
-        <span class="step-num">1</span><span class="step-label">Timesheet</span>
-      </button>
-      <div class="step-line"></div>
-      <button class="step-btn" data-tab="tab-expenses" onclick="switchTab(this)" role="tab">
-        <span class="step-num">2</span><span class="step-label">Expenses</span>
-      </button>
-      <div class="step-line"></div>
-      <button class="step-btn" data-tab="tab-mileage" onclick="switchTab(this)" role="tab">
-        <span class="step-num">3</span><span class="step-label">Mileage</span>
-      </button>
-      <div class="step-line"></div>
-      <button class="step-btn" data-tab="tab-allowances" onclick="switchTab(this)" role="tab">
-        <span class="step-num">4</span><span class="step-label">Extras</span>
-      </button>
-      <div class="step-line"></div>
-      <button class="step-btn" data-tab="tab-review" onclick="switchTab(this)" role="tab">
-        <span class="step-num">5</span><span class="step-label">Submit</span>
-      </button>
-    </nav>
+  </div><!-- /top-chrome -->
 
-  </div><!-- end .top-chrome -->
+  <!--
+    ┌─────────────────────────────────────────────────────┐
+    │  SCROLLABLE CONTENT                                 │
+    │  margin-top is set by JS to equal top-chrome height │
+    └─────────────────────────────────────────────────────┘
+  -->
 
-  <!-- ── SCROLLABLE CONTENT ─────────────────────────────────── -->
-  <!-- margin-top is set by JS after top-chrome height is measured -->
   <main class="app-content" id="app-content">
 
-    <!-- ══════════════ TAB 1: TIMESHEET ══════════════ -->
-    <section id="tab-timesheet" class="tab-panel active">
+```
+<!-- ══════════════════════════════════════════
+     TAB 1 — TIMESHEET
+══════════════════════════════════════════ -->
+<section id="tab-timesheet" class="tab-panel active">
 
-      <div class="card">
-        <div class="card-header">
-          <span class="card-icon">🗓️</span>
-          <div>
-            <h2 class="card-title">Fortnight Details</h2>
-            <p class="card-sub">Name and pay period</p>
-          </div>
+  <!-- Fortnight details card -->
+  <div class="card">
+    <div class="card-hd">
+      <span class="card-emoji">🗓️</span>
+      <div>
+        <h2 class="card-title">Fortnight Details</h2>
+        <p class="card-sub">Name and pay period</p>
+      </div>
+    </div>
+
+    <div class="fg">
+      <label class="fl" for="employee-name">Your Name <span class="req">*</span></label>
+      <input type="text" id="employee-name" class="fi" placeholder="Full name" autocomplete="name" />
+      <span class="fh">Auto-filled from ⚙️ Settings</span>
+    </div>
+
+    <div class="fg">
+      <label class="fl" for="fortnight-from">Fortnight Start <span class="req">*</span></label>
+      <input type="date" id="fortnight-from" class="fi" onchange="onFortnightStartChange(this)" />
+      <span class="fh">Must be a Monday — corrected automatically</span>
+    </div>
+
+    <div class="fg">
+      <label class="fl">Fortnight End (auto)</label>
+      <div class="fi-ro" id="fortnight-to-display">Select a start date above</div>
+    </div>
+  </div>
+
+  <!-- Daily hours — built by JS once dates chosen -->
+  <div class="card" id="daily-table-card" style="display:none">
+    <div class="card-hd">
+      <span class="card-emoji">⏱️</span>
+      <div>
+        <h2 class="card-title">Daily Hours</h2>
+        <p class="card-sub">Pay type, hours and job note per day</p>
+      </div>
+    </div>
+
+    <!-- Quick-fill toolbar -->
+    <div class="qf-bar">
+      <div class="qf-label">Quick fill all weekdays:</div>
+      <div class="qf-row">
+        <input  type="number" id="copy-hours-val" class="qf-hrs" placeholder="hrs" min="0" max="24" step="0.5" value="8" inputmode="decimal" />
+        <select id="copy-cat-val" class="qf-sel">
+          <option value="work">Work</option>
+          <option value="annual">Annual Leave</option>
+          <option value="sick">Sick Leave</option>
+          <option value="ph">Public Holiday</option>
+          <option value="rdo">RDO</option>
+          <option value="other">Other</option>
+        </select>
+        <button class="qf-btn" onclick="copyToAllWeekdays()">Apply</button>
+      </div>
+      <div class="qf-row" style="margin-top:6px">
+        <input type="text" id="copy-job-val" class="qf-job" placeholder="Job ref → copy to all rows" />
+        <button class="qf-btn" onclick="copyJobToAll()">Apply</button>
+      </div>
+    </div>
+
+    <!-- Daily rows injected here -->
+    <div id="daily-rows-container"></div>
+
+    <!-- Hours breakdown totals -->
+    <div class="hrs-summary" id="hours-summary"></div>
+  </div>
+
+  <div class="nav-row">
+    <div></div>
+    <button class="btn btn--next" onclick="gotoStep('tab-expenses')">Expenses →</button>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════
+     TAB 2 — EXPENSES
+══════════════════════════════════════════ -->
+<section id="tab-expenses" class="tab-panel">
+
+  <div class="card">
+    <div class="card-hd">
+      <span class="card-emoji">🧾</span>
+      <div>
+        <h2 class="card-title">Expenses</h2>
+        <p class="card-sub">Receipt photo required for each item</p>
+      </div>
+    </div>
+
+    <div id="expense-list" class="items-list"></div>
+
+    <div class="add-form">
+      <div class="add-form-hd">+ Add Expense</div>
+
+      <div class="fg">
+        <label class="fl">Type <span class="req">*</span></label>
+        <select id="exp-type" class="fi">
+          <option value="">Select type…</option>
+          <option>Materials / Supplies</option>
+          <option>Tools / Equipment</option>
+          <option>Parking</option>
+          <option>Accommodation</option>
+          <option>Meals</option>
+          <option>Phone / Internet</option>
+          <option>Fuel</option>
+          <option>Other</option>
+        </select>
+      </div>
+
+      <div class="fr2">
+        <div class="fg">
+          <label class="fl">Amount ($) <span class="req">*</span></label>
+          <input type="number" id="exp-amount" class="fi" placeholder="0.00" min="0" step="0.01" inputmode="decimal" />
         </div>
-
-        <div class="form-group">
-          <label class="field-label" for="employee-name">Your Name <span class="req">*</span></label>
-          <input type="text" id="employee-name" class="field-input" placeholder="Full name" autocomplete="name" />
-          <span class="field-hint">Auto-filled from Settings ⚙️</span>
-        </div>
-
-        <div class="form-group">
-          <label class="field-label" for="fortnight-from">Fortnight Start <span class="req">*</span></label>
-          <input type="date" id="fortnight-from" class="field-input" onchange="onFortnightStartChange(this)" />
-          <span class="field-hint">Must be a Monday — app corrects automatically</span>
-        </div>
-
-        <div class="form-group">
-          <label class="field-label">Fortnight End</label>
-          <div class="field-readonly" id="fortnight-to-display">Select a start date above</div>
+        <div class="fg">
+          <label class="fl">Date <span class="req">*</span></label>
+          <input type="date" id="exp-date" class="fi" />
         </div>
       </div>
 
-      <!-- Daily hours table — built by JS once dates are chosen -->
-      <div class="card" id="daily-table-card" style="display:none">
-        <div class="card-header">
-          <span class="card-icon">⏱️</span>
-          <div>
-            <h2 class="card-title">Daily Hours</h2>
-            <p class="card-sub">Hours, pay type and job note per day</p>
-          </div>
-        </div>
-
-        <!-- Quick-fill bar -->
-        <div class="quickfill-bar">
-          <span class="quickfill-label">Quick fill weekdays:</span>
-          <div class="quickfill-row">
-            <input  type="number" id="copy-hours-val" class="qf-input" placeholder="hrs" min="0" max="24" step="0.5" value="8" />
-            <select id="copy-cat-val" class="qf-select">
-              <option value="work">Work</option>
-              <option value="annual">Annual Leave</option>
-              <option value="sick">Sick Leave</option>
-              <option value="ph">Public Holiday</option>
-              <option value="rdo">RDO</option>
-              <option value="other">Other</option>
-            </select>
-            <button class="qf-btn" onclick="copyToAllWeekdays()">Apply</button>
-          </div>
-          <div class="quickfill-row" style="margin-top:6px">
-            <input type="text" id="copy-job-val" class="qf-input qf-input--wide" placeholder="Job ref to copy to all rows…" />
-            <button class="qf-btn" onclick="copyJobToAll()">Apply</button>
-          </div>
-        </div>
-
-        <!-- Rows injected here by buildDailyTable() -->
-        <div id="daily-rows-container"></div>
-
-        <!-- Hours summary totals -->
-        <div class="hours-summary" id="hours-summary"></div>
+      <div class="fg">
+        <label class="fl">Description</label>
+        <input type="text" id="exp-desc" class="fi" placeholder="Brief note (optional)" />
       </div>
 
-      <div class="nav-row">
-        <div></div>
-        <button class="btn btn--primary" onclick="gotoStep('tab-expenses')">Expenses →</button>
+      <div class="fg">
+        <label class="fl">Receipt <span class="req">*</span></label>
+        <label class="file-btn" id="receipt-label" for="exp-receipt">
+          <span>📷</span>
+          <span id="receipt-upload-text">Tap to photograph or upload receipt</span>
+          <input type="file" id="exp-receipt" accept="image/*,application/pdf" capture="environment" onchange="onReceiptSelected(this)" />
+        </label>
+        <span class="fh" id="receipt-size-hint"></span>
       </div>
-    </section>
 
-    <!-- ══════════════ TAB 2: EXPENSES ══════════════ -->
-    <section id="tab-expenses" class="tab-panel">
+      <button class="btn btn--primary btn--full" onclick="addExpense()">Add Expense</button>
+    </div>
+  </div>
 
-      <div class="card">
-        <div class="card-header">
-          <span class="card-icon">🧾</span>
-          <div>
-            <h2 class="card-title">Expenses</h2>
-            <p class="card-sub">Receipt required for each item</p>
-          </div>
+  <div class="nav-row">
+    <button class="btn btn--ghost" onclick="gotoStep('tab-timesheet')">← Back</button>
+    <button class="btn btn--next" onclick="gotoStep('tab-mileage')">Mileage →</button>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════
+     TAB 3 — MILEAGE
+══════════════════════════════════════════ -->
+<section id="tab-mileage" class="tab-panel">
+
+  <div class="card">
+    <div class="card-hd">
+      <span class="card-emoji">🚗</span>
+      <div>
+        <h2 class="card-title">Mileage</h2>
+        <p class="card-sub">Each trip logged separately</p>
+      </div>
+    </div>
+
+    <div id="mileage-list" class="items-list"></div>
+
+    <div class="add-form">
+      <div class="add-form-hd">+ Add Trip</div>
+
+      <div class="fr2">
+        <div class="fg">
+          <label class="fl">Date <span class="req">*</span></label>
+          <input type="date" id="mil-date" class="fi" />
         </div>
-
-        <div id="expense-list" class="items-list"></div>
-
-        <div class="add-form">
-          <div class="add-form-title">+ Add Expense</div>
-
-          <div class="form-group">
-            <label class="field-label">Type <span class="req">*</span></label>
-            <select id="exp-type" class="field-input">
-              <option value="">Select type…</option>
-              <option>Materials / Supplies</option>
-              <option>Tools / Equipment</option>
-              <option>Parking</option>
-              <option>Accommodation</option>
-              <option>Meals</option>
-              <option>Phone / Internet</option>
-              <option>Fuel</option>
-              <option>Other</option>
-            </select>
-          </div>
-
-          <div class="form-row-2">
-            <div class="form-group">
-              <label class="field-label">Amount ($) <span class="req">*</span></label>
-              <input type="number" id="exp-amount" class="field-input" placeholder="0.00" min="0" step="0.01" inputmode="decimal" />
-            </div>
-            <div class="form-group">
-              <label class="field-label">Date <span class="req">*</span></label>
-              <input type="date" id="exp-date" class="field-input" />
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label class="field-label">Description</label>
-            <input type="text" id="exp-desc" class="field-input" placeholder="Brief note (optional)" />
-          </div>
-
-          <div class="form-group">
-            <label class="field-label">Receipt Photo <span class="req">*</span></label>
-            <label class="file-btn" id="receipt-label" for="exp-receipt">
-              <span>📷</span>
-              <span id="receipt-upload-text">Tap to photograph or upload receipt</span>
-              <input type="file" id="exp-receipt" accept="image/*,application/pdf" onchange="onReceiptSelected(this)" />
-            </label>
-            <span class="field-hint" id="receipt-size-hint"></span>
-          </div>
-
-          <button class="btn btn--primary btn--full" onclick="addExpense()">Add Expense</button>
+        <div class="fg">
+          <label class="fl">Rate ($/km)</label>
+          <input type="number" id="mil-rate" class="fi" value="0.88" min="0" step="0.01" inputmode="decimal" oninput="calcMileageTotal()" />
         </div>
       </div>
 
-      <div class="nav-row">
-        <button class="btn btn--ghost" onclick="gotoStep('tab-timesheet')">← Back</button>
-        <button class="btn btn--primary" onclick="gotoStep('tab-mileage')">Mileage →</button>
-      </div>
-    </section>
-
-    <!-- ══════════════ TAB 3: MILEAGE ══════════════ -->
-    <section id="tab-mileage" class="tab-panel">
-
-      <div class="card">
-        <div class="card-header">
-          <span class="card-icon">🚗</span>
-          <div>
-            <h2 class="card-title">Mileage</h2>
-            <p class="card-sub">Each trip logged separately</p>
-          </div>
-        </div>
-
-        <div id="mileage-list" class="items-list"></div>
-
-        <div class="add-form">
-          <div class="add-form-title">+ Add Trip</div>
-
-          <div class="form-row-2">
-            <div class="form-group">
-              <label class="field-label">Date <span class="req">*</span></label>
-              <input type="date" id="mil-date" class="field-input" />
-            </div>
-            <div class="form-group">
-              <label class="field-label">Rate ($/km)</label>
-              <input type="number" id="mil-rate" class="field-input" value="0.88" min="0" step="0.01" inputmode="decimal" oninput="calcMileageTotal()" />
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label class="field-label">From <span class="req">*</span></label>
-            <input type="text" id="mil-from" class="field-input" placeholder="Origin location" />
-          </div>
-
-          <div class="form-group">
-            <label class="field-label">To <span class="req">*</span></label>
-            <input type="text" id="mil-to" class="field-input" placeholder="Destination" />
-          </div>
-
-          <div class="form-group">
-            <label class="field-label">Distance (km) <span class="req">*</span></label>
-            <input type="number" id="mil-km" class="field-input" placeholder="0" min="0" step="0.1" inputmode="decimal" oninput="calcMileageTotal()" />
-          </div>
-
-          <div class="calc-chip">
-            <span>Trip Total</span>
-            <strong id="mil-total">$0.00</strong>
-          </div>
-
-          <button class="btn btn--primary btn--full" onclick="addMileage()">Add Trip</button>
-        </div>
+      <div class="fg">
+        <label class="fl">From <span class="req">*</span></label>
+        <input type="text" id="mil-from" class="fi" placeholder="Origin location" />
       </div>
 
-      <div class="nav-row">
-        <button class="btn btn--ghost" onclick="gotoStep('tab-expenses')">← Back</button>
-        <button class="btn btn--primary" onclick="gotoStep('tab-allowances')">Extras →</button>
+      <div class="fg">
+        <label class="fl">To <span class="req">*</span></label>
+        <input type="text" id="mil-to" class="fi" placeholder="Destination" />
       </div>
-    </section>
 
-    <!-- ══════════════ TAB 4: ALLOWANCES ══════════════ -->
-    <section id="tab-allowances" class="tab-panel">
+      <div class="fg">
+        <label class="fl">Distance (km) <span class="req">*</span></label>
+        <input type="number" id="mil-km" class="fi" placeholder="0" min="0" step="0.1" inputmode="decimal" oninput="calcMileageTotal()" />
+      </div>
 
-      <div class="card">
-        <div class="card-header">
-          <span class="card-icon">⭐</span>
-          <div>
-            <h2 class="card-title">Allowances</h2>
-            <p class="card-sub">Optional — special pay items</p>
-          </div>
+      <div class="calc-chip">
+        <span>Trip Total</span>
+        <strong id="mil-total">$0.00</strong>
+      </div>
+
+      <button class="btn btn--primary btn--full" onclick="addMileage()">Add Trip</button>
+    </div>
+  </div>
+
+  <div class="nav-row">
+    <button class="btn btn--ghost" onclick="gotoStep('tab-expenses')">← Back</button>
+    <button class="btn btn--next" onclick="gotoStep('tab-allowances')">Extras →</button>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════
+     TAB 4 — ALLOWANCES
+══════════════════════════════════════════ -->
+<section id="tab-allowances" class="tab-panel">
+
+  <div class="card">
+    <div class="card-hd">
+      <span class="card-emoji">⭐</span>
+      <div>
+        <h2 class="card-title">Allowances</h2>
+        <p class="card-sub">Optional — special pay items</p>
+      </div>
+    </div>
+
+    <div id="allowance-list" class="items-list"></div>
+
+    <div class="add-form">
+      <div class="add-form-hd">+ Add Allowance</div>
+
+      <div class="fg">
+        <label class="fl">Type <span class="req">*</span></label>
+        <select id="all-type" class="fi">
+          <option value="">Select type…</option>
+          <option>Travel Allowance</option>
+          <option>Site Allowance</option>
+          <option>Tool Allowance</option>
+          <option>Meal Allowance</option>
+          <option>Height / Danger</option>
+          <option>First Aid</option>
+          <option>Confined Space</option>
+          <option>Other</option>
+        </select>
+      </div>
+
+      <div class="fr2">
+        <div class="fg">
+          <label class="fl">Amount ($) <span class="req">*</span></label>
+          <input type="number" id="all-amount" class="fi" placeholder="0.00" min="0" step="0.01" inputmode="decimal" />
         </div>
-
-        <div id="allowance-list" class="items-list"></div>
-
-        <div class="add-form">
-          <div class="add-form-title">+ Add Allowance</div>
-
-          <div class="form-group">
-            <label class="field-label">Type <span class="req">*</span></label>
-            <select id="all-type" class="field-input">
-              <option value="">Select type…</option>
-              <option>Travel Allowance</option>
-              <option>Site Allowance</option>
-              <option>Tool Allowance</option>
-              <option>Meal Allowance</option>
-              <option>Height / Danger</option>
-              <option>First Aid</option>
-              <option>Confined Space</option>
-              <option>Other</option>
-            </select>
-          </div>
-
-          <div class="form-row-2">
-            <div class="form-group">
-              <label class="field-label">Amount ($) <span class="req">*</span></label>
-              <input type="number" id="all-amount" class="field-input" placeholder="0.00" min="0" step="0.01" inputmode="decimal" />
-            </div>
-            <div class="form-group">
-              <label class="field-label">Notes</label>
-              <input type="text" id="all-notes" class="field-input" placeholder="Optional" />
-            </div>
-          </div>
-
-          <button class="btn btn--primary btn--full" onclick="addAllowance()">Add Allowance</button>
+        <div class="fg">
+          <label class="fl">Notes</label>
+          <input type="text" id="all-notes" class="fi" placeholder="Optional" />
         </div>
       </div>
 
-      <div class="nav-row">
-        <button class="btn btn--ghost" onclick="gotoStep('tab-mileage')">← Back</button>
-        <button class="btn btn--primary" onclick="buildReview(); gotoStep('tab-review')">Review →</button>
+      <button class="btn btn--primary btn--full" onclick="addAllowance()">Add Allowance</button>
+    </div>
+  </div>
+
+  <div class="nav-row">
+    <button class="btn btn--ghost" onclick="gotoStep('tab-mileage')">← Back</button>
+    <button class="btn btn--next" onclick="buildReview(); gotoStep('tab-review')">Review →</button>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════════
+     TAB 5 — REVIEW & SUBMIT
+══════════════════════════════════════════ -->
+<section id="tab-review" class="tab-panel">
+
+  <div class="card">
+    <div class="card-hd">
+      <span class="card-emoji">✅</span>
+      <div>
+        <h2 class="card-title">Review & Submit</h2>
+        <p class="card-sub">Check everything before sending</p>
       </div>
-    </section>
+    </div>
+    <div id="review-content"></div>
+  </div>
 
-    <!-- ══════════════ TAB 5: REVIEW & SUBMIT ══════════════ -->
-    <section id="tab-review" class="tab-panel">
+  <div class="card">
+    <div class="card-hd">
+      <span class="card-emoji">📧</span>
+      <div><h2 class="card-title">Send</h2></div>
+    </div>
 
-      <div class="card">
-        <div class="card-header">
-          <span class="card-icon">✅</span>
-          <div>
-            <h2 class="card-title">Review & Submit</h2>
-            <p class="card-sub">Check everything before sending</p>
-          </div>
-        </div>
-        <div id="review-content"></div>
+    <!-- Shown only when EmailJS is configured -->
+    <div id="emailjs-method" class="method-block" style="display:none">
+      <span class="method-badge method-badge--auto">✨ Auto Send</span>
+      <div class="method-title">EmailJS configured</div>
+      <div class="method-desc">PDF generates and sends automatically to <strong id="emailjs-to-display"></strong></div>
+    </div>
+
+    <!-- Always shown as fallback -->
+    <div id="mailto-method" class="method-block">
+      <span class="method-badge method-badge--manual">Manual</span>
+      <div class="method-title">Open Email App</div>
+      <div class="method-desc">PDF downloads first, then attach it in your email app.</div>
+      <div class="fg" style="margin-top:12px">
+        <label class="fl">Send To <span class="req">*</span></label>
+        <input type="email" id="email-to" class="fi" placeholder="payroll@company.com" />
       </div>
-
-      <!-- Send method -->
-      <div class="card">
-        <div class="card-header">
-          <span class="card-icon">📧</span>
-          <div><h2 class="card-title">Send</h2></div>
-        </div>
-
-        <!-- EmailJS auto-send (shown only when configured) -->
-        <div id="emailjs-method" class="method-card" style="display:none">
-          <div class="method-badge method-badge--auto">✨ Auto Send</div>
-          <div class="method-title">EmailJS configured</div>
-          <div class="method-desc">PDF is generated and sent automatically.</div>
-          <div class="method-to">To: <strong id="emailjs-to-display"></strong></div>
-        </div>
-
-        <!-- Manual mailto fallback -->
-        <div id="mailto-method" class="method-card">
-          <div class="method-badge method-badge--manual">Manual</div>
-          <div class="method-title">Open Email App</div>
-          <div class="method-desc">Attach the downloaded PDF in your email app.</div>
-          <div class="form-group" style="margin-top:10px">
-            <label class="field-label">Send To <span class="req">*</span></label>
-            <input type="email" id="email-to" class="field-input" placeholder="payroll@company.com" />
-          </div>
-          <div class="form-group">
-            <label class="field-label">CC (optional)</label>
-            <input type="email" id="email-cc" class="field-input" placeholder="manager@company.com" />
-          </div>
-        </div>
-
-        <div id="submit-note-emailjs" class="submit-note submit-note--auto" style="display:none">
-          ✨ EmailJS configured — submission sends automatically.
-        </div>
-        <div id="submit-note-manual" class="submit-note">
-          ℹ️ PDF downloads first, then your email app opens. Attach the PDF and send.
-        </div>
-
-        <button class="btn btn--submit" onclick="submitForm()">🚀 Submit Timesheet</button>
+      <div class="fg">
+        <label class="fl">CC (optional)</label>
+        <input type="email" id="email-cc" class="fi" placeholder="manager@company.com" />
       </div>
+    </div>
 
-      <div class="nav-row">
-        <button class="btn btn--ghost" onclick="gotoStep('tab-allowances')">← Back</button>
-        <div></div>
-      </div>
-    </section>
+    <div id="submit-note-emailjs" class="submit-note submit-note--auto" style="display:none">
+      ✨ EmailJS configured — sends automatically with PDF attached.
+    </div>
+    <div id="submit-note-manual" class="submit-note">
+      ℹ️ PDF downloads first. Then your email app opens — attach the PDF and tap Send.
+    </div>
 
-  </main>
+    <button class="btn btn--submit" onclick="submitForm()">🚀 Submit Timesheet</button>
+  </div>
 
-  <!-- ── SETTINGS DRAWER ───────────────────────────────────── -->
+  <div class="nav-row">
+    <button class="btn btn--ghost" onclick="gotoStep('tab-allowances')">← Back</button>
+    <div></div>
+  </div>
+</section>
+```
+
+  </main><!-- /app-content -->
+
+  <!-- ══════════════════════════════════════════
+       SETTINGS DRAWER (slides in from right)
+  ══════════════════════════════════════════ -->
+
   <div id="settings-overlay" class="overlay hidden" onclick="closeSettings()"></div>
   <div id="settings-drawer" class="settings-drawer">
-    <div class="drawer-header">
+    <div class="drawer-hd">
       <span class="drawer-title">⚙️ Settings</span>
       <button class="drawer-close" onclick="closeSettings()">✕</button>
     </div>
     <div class="drawer-body">
 
-      <div class="settings-section">
-        <div class="settings-section-title">👤 Profile</div>
-        <div class="form-group">
-          <label class="field-label">Your Name</label>
-          <input type="text" id="settings-name" class="field-input" placeholder="Auto-fills your timesheet" autocomplete="name" />
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <div class="settings-section-title">📧 Email</div>
-        <div class="form-group">
-          <label class="field-label">Send To (payroll address)</label>
-          <input type="email" id="settings-email-to" class="field-input" placeholder="payroll@yourcompany.com.au" />
-          <span class="field-hint">Pre-fills automatically on every submission</span>
-        </div>
-        <div class="form-group">
-          <label class="field-label">CC (optional)</label>
-          <input type="email" id="settings-email-cc" class="field-input" placeholder="manager@yourcompany.com.au" />
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <div class="settings-section-title">✨ EmailJS Auto-Send</div>
-        <div class="emailjs-info">
-          Free auto-send via <strong>emailjs.com</strong> (200 emails/month free).
-          See README for full setup steps.
-          <a href="https://www.emailjs.com" target="_blank" class="settings-link">Open emailjs.com →</a>
-        </div>
-        <div class="form-group">
-          <label class="field-label">Public Key</label>
-          <input type="text" id="settings-ejs-key" class="field-input field-mono" placeholder="user_abc123" autocomplete="off" />
-        </div>
-        <div class="form-group">
-          <label class="field-label">Service ID</label>
-          <input type="text" id="settings-ejs-service" class="field-input field-mono" placeholder="service_abc123" autocomplete="off" />
-        </div>
-        <div class="form-group">
-          <label class="field-label">Template ID</label>
-          <input type="text" id="settings-ejs-template" class="field-input field-mono" placeholder="template_abc123" autocomplete="off" />
-        </div>
-        <div id="emailjs-status" class="emailjs-status"></div>
-      </div>
-
-      <div class="settings-section">
-        <div class="settings-section-title">⏰ Reminders</div>
-        <label class="toggle-switch">
-          <input type="checkbox" id="settings-reminders" checked />
-          <span class="toggle-slider"></span>
-          <span class="toggle-text">Remind me when fortnight is due</span>
-        </label>
-      </div>
-
-      <button class="btn btn--primary btn--full" onclick="saveSettings()">Save Settings</button>
-      <button class="btn btn--ghost btn--full" style="margin-top:8px" onclick="closeSettings()">Cancel</button>
+```
+  <div class="s-section">
+    <div class="s-title">👤 Profile</div>
+    <div class="fg">
+      <label class="fl">Your Name</label>
+      <input type="text" id="settings-name" class="fi" placeholder="Auto-fills your timesheet" autocomplete="name" />
     </div>
   </div>
 
-  <!-- ── SUCCESS SCREEN ───────────────────────────────────── -->
-  <div id="success-overlay" class="overlay-success hidden">
+  <div class="s-section">
+    <div class="s-title">📧 Email</div>
+    <div class="fg">
+      <label class="fl">Payroll Email (Send To)</label>
+      <input type="email" id="settings-email-to" class="fi" placeholder="payroll@yourcompany.com.au" />
+      <span class="fh">Pre-fills automatically on every submission</span>
+    </div>
+    <div class="fg">
+      <label class="fl">CC (optional)</label>
+      <input type="email" id="settings-email-cc" class="fi" placeholder="manager@yourcompany.com.au" />
+    </div>
+  </div>
+
+  <div class="s-section">
+    <div class="s-title">✨ EmailJS Auto-Send</div>
+    <div class="ejs-info">
+      Free auto-send via <strong>emailjs.com</strong> (200/month free).
+      <a href="https://www.emailjs.com" target="_blank" class="ejs-link">Open emailjs.com →</a>
+    </div>
+    <div class="fg">
+      <label class="fl">Public Key</label>
+      <input type="text" id="settings-ejs-key" class="fi fi--mono" placeholder="user_abc123" autocomplete="off" />
+    </div>
+    <div class="fg">
+      <label class="fl">Service ID</label>
+      <input type="text" id="settings-ejs-service" class="fi fi--mono" placeholder="service_abc123" autocomplete="off" />
+    </div>
+    <div class="fg">
+      <label class="fl">Template ID</label>
+      <input type="text" id="settings-ejs-template" class="fi fi--mono" placeholder="template_abc123" autocomplete="off" />
+    </div>
+    <div id="emailjs-status" class="ejs-status"></div>
+  </div>
+
+  <div class="s-section">
+    <div class="s-title">⏰ Reminders</div>
+    <label class="tog">
+      <input type="checkbox" id="settings-reminders" checked />
+      <span class="tog-slider"></span>
+      <span class="tog-text">Remind me when fortnight is due</span>
+    </label>
+  </div>
+
+  <button class="btn btn--primary btn--full" onclick="saveSettings()">Save Settings</button>
+  <button class="btn btn--ghost btn--full" style="margin-top:8px" onclick="closeSettings()">Cancel</button>
+</div>
+```
+
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       SUCCESS SCREEN
+  ══════════════════════════════════════════ -->
+
+  <div id="success-overlay" class="success-overlay hidden">
     <div class="success-card">
       <div class="success-emoji">🎉</div>
       <h2 class="success-title">Submitted!</h2>
@@ -499,7 +542,10 @@
     </div>
   </div>
 
-  <!-- ── LOADING OVERLAY ──────────────────────────────────── -->
+  <!-- ══════════════════════════════════════════
+       LOADING SPINNER
+  ══════════════════════════════════════════ -->
+
   <div id="loading-overlay" class="loading-overlay hidden">
     <div class="loading-card">
       <div class="spinner"></div>
@@ -507,9 +553,11 @@
     </div>
   </div>
 
-  <!-- ── TOAST ────────────────────────────────────────────── -->
+  <!-- Toast notification -->
+
   <div id="toast" class="toast hidden"></div>
 
   <script src="app.js"></script>
+
 </body>
 </html>
