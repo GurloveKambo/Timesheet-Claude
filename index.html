@@ -140,6 +140,7 @@
         <p class="card-sub">Name and pay period</p>
       </div>
     </div>
+    <button id="load-last-btn" class="btn btn--ghost btn--full" style="display:none;margin-bottom:14px;font-size:13px" onclick="loadLastSubmission()">📂 Load Last Submission</button>
 
     <div class="fg">
       <label class="fl" for="employee-name">Your Name <span class="req">*</span></label>
@@ -259,7 +260,7 @@
         <label class="file-btn" id="receipt-label" for="exp-receipt">
           <span>📷</span>
           <span id="receipt-upload-text">Tap to photograph or upload receipt</span>
-          <input type="file" id="exp-receipt" accept="image/*,application/pdf" onchange="onReceiptSelected(this)" />
+          <input type="file" id="exp-receipt" accept="image/*,application/pdf" capture="environment" onchange="onReceiptSelected(this)" />
         </label>
         <span class="fh" id="receipt-size-hint"></span>
       </div>
@@ -536,7 +537,9 @@
       <h2 class="success-title">Submitted!</h2>
       <p class="success-msg" id="success-msg">Your timesheet has been sent.</p>
       <div class="success-next" id="success-next-info"></div>
-      <button class="btn btn--primary btn--full" style="margin-top:20px" onclick="startNewSubmission()">
+      <p class="success-filename" id="pdf-filename-display"></p>
+      <button class="btn btn--ghost btn--full" style="margin-top:12px" onclick="dismissSuccess()">Done ✓</button>
+      <button class="btn btn--primary btn--full" style="margin-top:8px" onclick="startNewSubmission()">
         Start Next Fortnight →
       </button>
     </div>
