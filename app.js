@@ -120,9 +120,25 @@ TOP-CHROME HEIGHT → CONTENT MARGIN
 function setContentMargin() {
 const chrome  = document.getElementById(‘top-chrome’);
 const content = document.getElementById(‘app-content’);
-if (chrome && content) {
-content.style.marginTop = chrome.offsetHeight + ‘px’;
+if (!chrome || !content) return;
+const h = chrome.offsetHeight;
+// Only apply if we got a real measurement (> 0)
+// Adds 4px breathing room so content never sits flush against header
+if (h > 0) {
+content.style.marginTop = (h + 4) + ‘px’;
 }
+}
+
+/* Called once on load — polls for 2 seconds to catch
+late layout shifts (fonts loading, banners appearing) */
+function initContentMargin() {
+setContentMargin();
+let attempts = 0;
+const poll = setInterval(() => {
+setContentMargin();
+attempts++;
+if (attempts >= 8) clearInterval(poll); // Stop after 2 seconds
+}, 250);
 }
 
 /* ─────────────────────────────────────────────────────
@@ -1383,8 +1399,13 @@ return s.replace(/&/g,’&’).replace(/</g,’<’).replace(/>/g,’>’)
 
 /* ─────────────────────────────────────────────────────
 INIT
+Written defensively — every async step is wrapped in
+try/catch so one failure never stops the rest.
+The app must always be interactive, even if IndexedDB
+is unavailable (e.g. private browsing on some browsers).
 ───────────────────────────────────────────────────── */
-async function init() {
+function init() {
+// Step 1 — synchronous setup (always runs, cannot fail)
 loadSettings();
 
 const nf = document.getElementById(‘employee-name’);
@@ -1396,7 +1417,46 @@ const today = toISO(new Date());
 document.getElementById(‘exp-date’).value = today;
 document.getElementById(‘mil-date’).value = today;
 
-// Check if a last submission exists — show “Load Last” button if so
+// Step 2 — render empty lists immediately so UI is ready
+renderExpenses(); renderMileage(); renderAllowances();
+
+// Step 3 — set content margin IMMEDIATELY (critical — prevents header overlap)
+initContentMargin();
+window.addEventListener(‘resize’, setContentMargin);
+// Also re-measure after fonts and images have loaded
+window.addEventListener(‘load’, initContentMargin);
+
+// Step 4 — check reminder (sync, uses localStorage)
+checkReminder();
+
+// Step 5 — update header text
+updateHeaderStatus();
+
+// Step 6 — async: load draft and last submission from IndexedDB
+// These run after the UI is already interactive
+loadDraftAsync();
+checkLastSubmissionAsync();
+
+if (!settings.name && !settings.emailTo) {
+setTimeout(() => showToast(‘👋 Welcome! Open ⚙️ Settings to get started’, ‘success’), 900);
+}
+
+console.log(‘VB Built FieldSheet v4 ✅’);
+}
+
+/* Load draft — runs after init, never blocks UI */
+async function loadDraftAsync() {
+try {
+await loadDraft();
+// Re-measure after draft content may have expanded the page
+setTimeout(setContentMargin, 100);
+} catch(e) {
+console.warn(‘Draft load failed:’, e);
+}
+}
+
+/* Check for last submission button — runs after init, never blocks UI */
+async function checkLastSubmissionAsync() {
 try {
 const last = await dbGet(‘submissions’, ‘last’);
 const btn  = document.getElementById(‘load-last-btn’);
@@ -1405,21 +1465,9 @@ const when = new Date(last.submittedAt).toLocaleDateString(‘en-AU’);
 btn.textContent = `📂 Load Last Submission (${when})`;
 btn.style.display = ‘block’;
 }
-} catch {}
-
-await loadDraft();
-checkReminder();
-renderExpenses(); renderMileage(); renderAllowances();
-
-setContentMargin();
-window.addEventListener(‘resize’, setContentMargin);
-updateHeaderStatus();
-
-if (!settings.name && !settings.emailTo) {
-setTimeout(() => showToast(‘👋 Welcome! Open ⚙️ Settings to get started’, ‘success’), 900);
+} catch(e) {
+console.warn(‘Last submission check failed:’, e);
 }
-
-console.log(‘VB Built FieldSheet v4 ✅’);
 }
 
 document.addEventListener(‘DOMContentLoaded’, init);
