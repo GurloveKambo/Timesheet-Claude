@@ -1,971 +1,935 @@
 /* =====================================================
-VB BUILT — FIELDSHEET  |  app.js  v4
+VB BUILT FIELDSHEET — app.js  (clean rebuild)
 
-Bug fixes in this version:
+Architecture principles:
 
-1. Receipts stored in IndexedDB (not localStorage)
-   — localStorage silently truncates large base64 images
-   — IndexedDB handles files of any size reliably
-1. PDF saving on iPhone — uses jsPDF’s built-in .save()
-   which triggers iOS “Save to Files” sheet correctly
-1. PDF sharing — uses Web Share API (navigator.share)
-   which is the ONLY way to share files from a browser
-   on iOS. Falls back to download link on Android/desktop.
-1. “Done” button added to success screen
-1. Last submitted timesheet stored and viewable/editable
-   ===================================================== */
+1. init() is 100% synchronous — UI works immediately
+1. IndexedDB for large data (receipts), localStorage for settings
+1. Pages shown/hidden with display:block/none — simple and reliable
+1. Header height measured and applied immediately on DOMContentLoaded
+- re-measured on resize and after any banner shows/hides
+  ===================================================== */
 
 ‘use strict’;
 
-/* ─────────────────────────────────────────────────────
-INDEXEDDB SETUP
-We use IndexedDB (the browser’s built-in mini database)
-to store large data like receipt images and full
-submission history. localStorage has a ~5MB limit and
-silently fails with large files — IndexedDB has no
-practical limit.
-───────────────────────────────────────────────────── */
-const DB_NAME    = ‘fieldsheet_db’;
-const DB_VERSION = 1;
-let db = null; // Will hold our database connection
-
-/**
-
-- Opens (or creates) the IndexedDB database.
-- Returns a Promise that resolves once the DB is ready.
-  */
-  function openDB() {
-  return new Promise((resolve, reject) => {
-  if (db) { resolve(db); return; } // Already open
-  
-  const req = indexedDB.open(DB_NAME, DB_VERSION);
-  
-  // Runs when the database is first created or upgraded
-  req.onupgradeneeded = e => {
-  const database = e.target.result;
-  // “drafts” store: holds the current in-progress form data
-  if (!database.objectStoreNames.contains(‘drafts’)) {
-  database.createObjectStore(‘drafts’, { keyPath: ‘id’ });
-  }
-  // “submissions” store: holds the last completed submission
-  if (!database.objectStoreNames.contains(‘submissions’)) {
-  database.createObjectStore(‘submissions’, { keyPath: ‘id’ });
-  }
-  };
-  
-  req.onsuccess = e => { db = e.target.result; resolve(db); };
-  req.onerror   = e => reject(e.target.error);
-  });
-  }
-
-/** Write a value to a store */
-function dbPut(storeName, value) {
-return openDB().then(database => new Promise((resolve, reject) => {
-const tx  = database.transaction(storeName, ‘readwrite’);
-const req = tx.objectStore(storeName).put(value);
-req.onsuccess = () => resolve();
-req.onerror   = e  => reject(e.target.error);
-}));
-}
-
-/** Read a value from a store by key */
-function dbGet(storeName, key) {
-return openDB().then(database => new Promise((resolve, reject) => {
-const tx  = database.transaction(storeName, ‘readonly’);
-const req = tx.objectStore(storeName).get(key);
-req.onsuccess = e => resolve(e.target.result);
-req.onerror   = e => reject(e.target.error);
-}));
-}
-
-/** Delete a value from a store by key */
-function dbDelete(storeName, key) {
-return openDB().then(database => new Promise((resolve, reject) => {
-const tx  = database.transaction(storeName, ‘readwrite’);
-const req = tx.objectStore(storeName).delete(key);
-req.onsuccess = () => resolve();
-req.onerror   = e  => reject(e.target.error);
-}));
-}
-
-/* ─────────────────────────────────────────────────────
-APP STATE
-───────────────────────────────────────────────────── */
-let state = {
-employee: {
-name:          ‘’,
-fortnightFrom: ‘’,
-fortnightTo:   ‘’
-},
-dailyHours:  [],
-expenses:    [],  // receipts stored as base64 inside each expense object
-mileage:     [],
-allowances:  []
+/* ─── STATE ─────────────────────────────────────── */
+var state = {
+emp:        { name: ‘’, fnFrom: ‘’, fnTo: ‘’ },
+days:       [],   // [{date, dayName, hours, type, note}]
+expenses:   [],   // [{id, type, amount, date, desc, receiptName, receiptData, receiptType}]
+mileage:    [],   // [{id, date, from, to, km, rate, total}]
+allowances: []    // [{id, type, amount, notes}]
 };
 
-let settings = {
-name:          ‘’,
-emailTo:       ‘’,
-emailCc:       ‘’,
-ejsPublicKey:  ‘’,
-ejsServiceId:  ‘’,
-ejsTemplateId: ‘’,
-reminders:     true,
-lastSubmittedFortnightEnd: ‘’
+var cfg = {
+name: ‘’, emailTo: ‘’, emailCc: ‘’,
+ejsKey: ‘’, ejsSvc: ‘’, ejsTpl: ‘’,
+reminders: true,
+lastFnEnd: ‘’
 };
 
-/* ─────────────────────────────────────────────────────
-TOP-CHROME HEIGHT → CONTENT MARGIN
-───────────────────────────────────────────────────── */
-function setContentMargin() {
-const chrome  = document.getElementById(‘top-chrome’);
-const content = document.getElementById(‘app-content’);
-if (!chrome || !content) return;
-const h = chrome.offsetHeight;
-// Only apply if we got a real measurement (> 0)
-// Adds 4px breathing room so content never sits flush against header
-if (h > 0) {
-content.style.marginTop = (h + 4) + ‘px’;
+/* ─── INDEXEDDB ──────────────────────────────────── */
+var _db = null;
+
+function openDB(cb) {
+if (_db) { cb(_db); return; }
+var req = indexedDB.open(‘fieldsheet’, 1);
+req.onupgradeneeded = function(e) {
+var d = e.target.result;
+if (!d.objectStoreNames.contains(‘store’)) {
+d.createObjectStore(‘store’, { keyPath: ‘k’ });
 }
+};
+req.onsuccess = function(e) { _db = e.target.result; cb(_db); };
+req.onerror   = function()  { cb(null); };
 }
 
-/* Called once on load — polls for 2 seconds to catch
-late layout shifts (fonts loading, banners appearing) */
-function initContentMargin() {
-setContentMargin();
-let attempts = 0;
-const poll = setInterval(() => {
-setContentMargin();
-attempts++;
-if (attempts >= 8) clearInterval(poll); // Stop after 2 seconds
-}, 250);
+function dbSet(key, val) {
+openDB(function(d) {
+if (!d) return;
+var tx = d.transaction(‘store’, ‘readwrite’);
+tx.objectStore(‘store’).put({ k: key, v: val });
+});
 }
 
-/* ─────────────────────────────────────────────────────
-SERVICE WORKER
-───────────────────────────────────────────────────── */
+function dbGet(key, cb) {
+openDB(function(d) {
+if (!d) { cb(null); return; }
+var tx  = d.transaction(‘store’, ‘readonly’);
+var req = tx.objectStore(‘store’).get(key);
+req.onsuccess = function(e) { cb(e.target.result ? e.target.result.v : null); };
+req.onerror   = function()  { cb(null); };
+});
+}
+
+function dbDel(key) {
+openDB(function(d) {
+if (!d) return;
+var tx = d.transaction(‘store’, ‘readwrite’);
+tx.objectStore(‘store’).delete(key);
+});
+}
+
+/* ─── HEADER HEIGHT → CONTENT MARGIN ────────────────
+This is the fix for buttons not working.
+The fixed header covers the top of the page.
+We measure its height and push the content down.
+─────────────────────────────────────────────────── */
+function fixMargin() {
+var hdr = document.getElementById(‘header’);
+var con = document.getElementById(‘content’);
+if (!hdr || !con) return;
+var h = hdr.getBoundingClientRect().height;
+if (h > 0) con.style.marginTop = Math.ceil(h) + ‘px’;
+}
+
+/* ─── SERVICE WORKER ─────────────────────────────── */
 if (‘serviceWorker’ in navigator) {
-navigator.serviceWorker.register(‘sw.js’)
-.then(reg => {
+navigator.serviceWorker.register(‘sw.js’).then(function(reg) {
 reg.update();
-reg.addEventListener(‘updatefound’, () => {
-const nw = reg.installing;
-nw.addEventListener(‘statechange’, () => {
-if (nw.state === ‘installed’ && navigator.serviceWorker.controller) {
-document.getElementById(‘update-banner’).classList.remove(‘hidden’);
-setTimeout(setContentMargin, 50);
+reg.addEventListener(‘updatefound’, function() {
+var w = reg.installing;
+w.addEventListener(‘statechange’, function() {
+if (w.state === ‘installed’ && navigator.serviceWorker.controller) {
+show(‘update-banner’);
+fixMargin();
 }
 });
 });
-})
-.catch(e => console.warn(‘SW:’, e));
+});
 }
 
 function applyUpdate() {
 if (navigator.serviceWorker.controller) {
 navigator.serviceWorker.controller.postMessage({ action: ‘skipWaiting’ });
 }
-window.location.reload();
+location.reload();
 }
 
-/* ─────────────────────────────────────────────────────
-TAB NAVIGATION
-───────────────────────────────────────────────────── */
-function switchTab(btn) {
-const targetId = btn.getAttribute(‘data-tab’);
-document.querySelectorAll(’.tab-panel’).forEach(p => p.classList.remove(‘active’));
-document.querySelectorAll(’.step-btn’).forEach(b => b.classList.remove(‘active’));
-document.getElementById(targetId).classList.add(‘active’);
-btn.classList.add(‘active’);
+/* ─── TAB SWITCHING ──────────────────────────────── */
+function showTab(n) {
+/* Hide all pages */
+for (var i = 1; i <= 5; i++) {
+var p = document.getElementById(‘page-’ + i);
+var b = document.getElementById(‘tab-btn-’ + i);
+if (p) p.style.display = ‘none’;
+if (b) { b.classList.remove(‘active’); }
+}
+/* Show selected page */
+var page = document.getElementById(‘page-’ + n);
+var btn  = document.getElementById(‘tab-btn-’ + n);
+if (page) page.style.display = ‘block’;
+if (btn)  btn.classList.add(‘active’);
 window.scrollTo({ top: 0, behavior: ‘smooth’ });
 }
 
-function gotoStep(tabId) {
-const btn = document.querySelector(`[data-tab="${tabId}"]`);
-if (btn) switchTab(btn);
+/* ─── DATE HELPERS ───────────────────────────────── */
+function localDate(iso) {
+/* Parse YYYY-MM-DD as LOCAL time (avoids UTC shift) */
+var p = iso.split(’-’);
+return new Date(+p[0], +p[1] - 1, +p[2]);
 }
 
-/* ─────────────────────────────────────────────────────
-FORTNIGHT DATE LOGIC
-───────────────────────────────────────────────────── */
-function onFortnightStartChange(input) {
-if (!input.value) return;
-const d   = parseLocalDate(input.value);
-const dow = d.getDay();
+function isoDate(d) {
+var y = d.getFullYear();
+var m = String(d.getMonth() + 1).padStart(2, ‘0’);
+var day = String(d.getDate()).padStart(2, ‘0’);
+return y + ‘-’ + m + ‘-’ + day;
+}
+
+function auDate(iso) {
+if (!iso) return ‘—’;
+var p = iso.split(’-’);
+if (p.length !== 3) return iso;
+return p[2] + ‘/’ + p[1] + ‘/’ + p[0];
+}
+
+function todayISO() { return isoDate(new Date()); }
+
+/* ─── FORTNIGHT DATE PICKER ──────────────────────── */
+function onStartChange() {
+var inp = document.getElementById(‘fn-start’);
+if (!inp.value) return;
+
+var d   = localDate(inp.value);
+var dow = d.getDay(); /* 0=Sun, 1=Mon … 6=Sat */
 
 if (dow !== 1) {
-const diff = dow === 0 ? -6 : 1 - dow;
-d.setDate(d.getDate() + diff);
-input.value = toISO(d);
-showToast(’📅 Snapped to Monday ’ + fmtDate(input.value), ‘success’);
+/* Snap to nearest Monday */
+d.setDate(d.getDate() + (dow === 0 ? -6 : 1 - dow));
+inp.value = isoDate(d);
+toast(’📅 Snapped to Monday ’ + auDate(inp.value), ‘ok’);
 }
 
-const end = new Date(d);
-end.setDate(d.getDate() + 13);
+var end = new Date(d);
+end.setDate(d.getDate() + 13); /* +13 = 14-day fortnight */
 
-state.employee.fortnightFrom = input.value;
-state.employee.fortnightTo   = toISO(end);
+state.emp.fnFrom = inp.value;
+state.emp.fnTo   = isoDate(end);
 
-document.getElementById(‘fortnight-to-display’).textContent =
-fmtDate(state.employee.fortnightTo) + ’ (Sunday)’;
+document.getElementById(‘fn-end-display’).textContent =
+auDate(state.emp.fnTo) + ’ (Sunday)’;
 
-updateHeaderStatus();
-buildDailyTable();
+updateHeader();
+buildDays();
 }
 
-function getNextFortnightStart(lastEndISO) {
-const d = parseLocalDate(lastEndISO);
-d.setDate(d.getDate() + 1);
-return toISO(d);
+function nextFnStart(lastEndISO) {
+var d = localDate(lastEndISO);
+d.setDate(d.getDate() + 1); /* Monday after last Sunday */
+return isoDate(d);
 }
 
-/* ─────────────────────────────────────────────────────
-BUILD DAILY TABLE
-───────────────────────────────────────────────────── */
-function buildDailyTable() {
-const from = state.employee.fortnightFrom;
-const to   = state.employee.fortnightTo;
-if (!from || !to) return;
+/* ─── BUILD DAILY ROWS ───────────────────────────── */
+var TYPE_LABELS = {
+work:   ‘Work’,
+annual: ‘Annual Leave’,
+sick:   ‘Sick Leave’,
+ph:     ‘Public Holiday’,
+rdo:    ‘RDO / Day Off’,
+other:  ‘Other’
+};
 
-const DAY_NAMES = [‘Sun’,‘Mon’,‘Tue’,‘Wed’,‘Thu’,‘Fri’,‘Sat’];
-const container = document.getElementById(‘daily-rows-container’);
+var DAY_NAMES = [‘Sun’,‘Mon’,‘Tue’,‘Wed’,‘Thu’,‘Fri’,‘Sat’];
+
+function buildDays() {
+if (!state.emp.fnFrom || !state.emp.fnTo) return;
+
+var container = document.getElementById(‘day-rows’);
 container.innerHTML = ‘’;
 
-const cur = parseLocalDate(from);
-const end = parseLocalDate(to);
+var cur = localDate(state.emp.fnFrom);
+var end = localDate(state.emp.fnTo);
 
 while (cur <= end) {
-const iso       = toISO(cur);
-const dayName   = DAY_NAMES[cur.getDay()];
-const isWeekend = cur.getDay() === 0 || cur.getDay() === 6;
-const saved     = state.dailyHours.find(d => d.date === iso) || {};
-const type      = saved.type || (isWeekend ? ‘rdo’ : ‘work’);
+var iso     = isoDate(cur);
+var dn      = DAY_NAMES[cur.getDay()];
+var weekend = (cur.getDay() === 0 || cur.getDay() === 6);
 
 ```
-const row = document.createElement('div');
-row.className = 'day-row' + (isWeekend ? ' weekend' : '');
+/* Restore saved values if available */
+var saved = null;
+for (var i = 0; i < state.days.length; i++) {
+  if (state.days[i].date === iso) { saved = state.days[i]; break; }
+}
+var defType = saved ? saved.type  : (weekend ? 'rdo' : 'work');
+var defHrs  = saved ? (saved.hours || '') : '';
+var defNote = saved ? (saved.note  || '') : '';
+
+var row = document.createElement('div');
+row.className = 'day-row' + (weekend ? ' weekend' : '') + (defHrs ? ' has-hrs' : '');
 row.id = 'row-' + iso;
 
-row.innerHTML = `
-  <div class="day-row-top">
-    <span class="day-name">${dayName}</span>
-    <span class="day-date">${fmtDate(iso)}</span>
-    ${isWeekend ? '<span class="day-weekend-tag">Weekend</span>' : ''}
-  </div>
-  <div class="day-row-inputs">
-    <select class="day-select" id="type-${iso}" data-type="${type}" data-date="${iso}"
-            onchange="onTypeChange('${iso}', this)">
-      <option value="work"   ${type==='work'   ?'selected':''}>Work</option>
-      <option value="annual" ${type==='annual' ?'selected':''}>Annual Leave</option>
-      <option value="sick"   ${type==='sick'   ?'selected':''}>Sick Leave</option>
-      <option value="ph"     ${type==='ph'     ?'selected':''}>Public Holiday</option>
-      <option value="rdo"    ${type==='rdo'    ?'selected':''}>RDO / Day Off</option>
-      <option value="other"  ${type==='other'  ?'selected':''}>Other</option>
-    </select>
-    <input type="number" class="day-hours" id="hours-${iso}" data-date="${iso}"
-           placeholder="0" min="0" max="24" step="0.5" inputmode="decimal"
-           value="${saved.hours > 0 ? saved.hours : ''}"
-           oninput="onHoursChange('${iso}')" />
-    <input type="text" class="day-notes" id="notes-${iso}" data-date="${iso}"
-           placeholder="Job / notes"
-           value="${escHtml(saved.jobNote || '')}" />
-  </div>`;
+row.innerHTML =
+  '<div class="day-top">' +
+    '<span class="day-name">' + dn + '</span>' +
+    '<span class="day-date">' + auDate(iso) + '</span>' +
+    (weekend ? '<span class="day-wktag">Weekend</span>' : '') +
+  '</div>' +
+  '<div class="day-inputs">' +
+    '<select class="day-sel" id="ds-' + iso + '" data-t="' + defType + '" ' +
+            'onchange="onTypeChange(\'' + iso + '\',this)">' +
+      buildTypeOpts(defType) +
+    '</select>' +
+    '<input type="number" class="day-hrs" id="dh-' + iso + '" ' +
+           'placeholder="0" min="0" max="24" step="0.5" inputmode="decimal" ' +
+           'value="' + defHrs + '" ' +
+           'oninput="onHrsChange(\'' + iso + '\')" />' +
+    '<input type="text" class="day-note" id="dn-' + iso + '" ' +
+           'placeholder="Job / notes" ' +
+           'value="' + esc(defNote) + '" />' +
+  '</div>';
 
 container.appendChild(row);
-
-// Apply colour immediately
-const sel = row.querySelector('.day-select');
-sel.dataset.type = type;
-
-if (saved.hours > 0) row.classList.add('has-hours');
 cur.setDate(cur.getDate() + 1);
 ```
 
 }
 
-document.getElementById(‘daily-table-card’).style.display = ‘block’;
-updateHoursSummary();
-setTimeout(setContentMargin, 50);
+show(‘hours-card’);
+calcTotals();
+}
+
+function buildTypeOpts(sel) {
+var opts = [‘work’,‘annual’,‘sick’,‘ph’,‘rdo’,‘other’];
+return opts.map(function(v) {
+return ‘<option value=”’ + v + ‘”’ + (v === sel ? ’ selected’ : ‘’) + ‘>’ + TYPE_LABELS[v] + ‘</option>’;
+}).join(’’);
 }
 
 function onTypeChange(iso, sel) {
-const type = sel.value;
-sel.dataset.type = type;
-const hoursInput = document.getElementById(‘hours-’ + iso);
-if ([‘annual’,‘sick’,‘ph’].includes(type) && !hoursInput.value) {
-hoursInput.value = ‘7.6’;
-document.getElementById(‘row-’ + iso).classList.add(‘has-hours’);
+sel.dataset.t = sel.value;
+var hInput = document.getElementById(‘dh-’ + iso);
+if ([‘annual’,‘sick’,‘ph’].indexOf(sel.value) !== -1 && !hInput.value) {
+hInput.value = ‘7.6’;
+document.getElementById(‘row-’ + iso).classList.add(‘has-hrs’);
 }
-if (type === ‘rdo’) {
-hoursInput.value = ‘’;
-document.getElementById(‘row-’ + iso).classList.remove(‘has-hours’);
+if (sel.value === ‘rdo’) {
+hInput.value = ‘’;
+document.getElementById(‘row-’ + iso).classList.remove(‘has-hrs’);
 }
-updateHoursSummary();
-}
-
-function onHoursChange(iso) {
-const val = parseFloat(document.getElementById(‘hours-’ + iso)?.value) || 0;
-const row = document.getElementById(‘row-’ + iso);
-if (row) row.classList.toggle(‘has-hours’, val > 0);
-updateHoursSummary();
+calcTotals();
 }
 
-function updateHoursSummary() {
-const totals = { work:0, annual:0, sick:0, ph:0, rdo:0, other:0 };
-let total = 0;
-document.querySelectorAll(’.day-row’).forEach(row => {
-const iso  = row.id.replace(‘row-’, ‘’);
-const hrs  = parseFloat(document.getElementById(‘hours-’ + iso)?.value) || 0;
-const type = document.getElementById(‘type-’  + iso)?.value || ‘work’;
-if (hrs > 0) { totals[type] = (totals[type]||0) + hrs; total += hrs; }
+function onHrsChange(iso) {
+var val = parseFloat(document.getElementById(‘dh-’ + iso).value) || 0;
+document.getElementById(‘row-’ + iso).classList.toggle(‘has-hrs’, val > 0);
+calcTotals();
+}
+
+function calcTotals() {
+var totals = { work:0, annual:0, sick:0, ph:0, rdo:0, other:0 };
+var total  = 0;
+
+document.querySelectorAll(’.day-row’).forEach(function(row) {
+var iso  = row.id.replace(‘row-’, ‘’);
+var hrs  = parseFloat(document.getElementById(‘dh-’ + iso).value) || 0;
+var type = document.getElementById(‘ds-’ + iso).value;
+if (hrs > 0) { totals[type] = (totals[type] || 0) + hrs; total += hrs; }
 });
 
-const el = document.getElementById(‘hours-summary’);
+var el = document.getElementById(‘hrs-totals’);
 if (!el) return;
 
-const items = [
-{ label:‘Total’,   val: total,                      cls:‘c-amber’  },
-{ label:‘Work’,    val: totals.work,                cls:’’         },
-{ label:‘Ann. Lv’, val: totals.annual,              cls:‘c-green’  },
-{ label:‘Sick’,    val: totals.sick,                cls:‘c-red’    },
-{ label:‘PH’,      val: totals.ph,                  cls:‘c-yellow’ },
-{ label:‘Other’,   val: totals.rdo + totals.other,  cls:‘c-purple’ }
-].filter(i => i.label === ‘Total’ || i.val > 0);
+var cols = [
+{ lbl:‘Total’, val:total,          cls:‘amber’  },
+{ lbl:‘Work’,  val:totals.work,    cls:’’       },
+{ lbl:‘Ann.Lv’,val:totals.annual,  cls:‘green’  },
+{ lbl:‘Sick’,  val:totals.sick,    cls:‘red’    },
+{ lbl:‘PH’,    val:totals.ph,      cls:‘yellow’ },
+{ lbl:‘Other’, val:totals.rdo+totals.other, cls:‘purple’ }
+].filter(function(c) { return c.lbl === ‘Total’ || c.val > 0; });
 
-el.innerHTML = items.map(i => ` <div class="hrs-item"> <span class="hrs-label">${i.label}</span> <span class="hrs-val ${i.cls}">${i.val.toFixed(1)}</span> </div>`).join(’’);
+el.innerHTML = cols.map(function(c) {
+return ‘<div class="ht-item">’ +
+‘<span class="ht-lbl">’ + c.lbl + ‘</span>’ +
+‘<span class="ht-val ' + c.cls + '">’ + c.val.toFixed(1) + ‘</span>’ +
+‘</div>’;
+}).join(’’);
 }
 
-/* ─────────────────────────────────────────────────────
-QUICK-FILL TOOLS
-───────────────────────────────────────────────────── */
-function copyToAllWeekdays() {
-const hrs = document.getElementById(‘copy-hours-val’).value;
-const cat = document.getElementById(‘copy-cat-val’).value;
-if (!hrs || parseFloat(hrs) <= 0) { showToast(‘Enter hours first’, ‘error’); return; }
+/* ─── QUICK FILL ─────────────────────────────────── */
+function qfApplyHours() {
+var hrs = document.getElementById(‘qf-hrs’).value;
+var typ = document.getElementById(‘qf-type’).value;
+if (!hrs || parseFloat(hrs) <= 0) { toast(‘Enter hours first’, ‘err’); return; }
 
-let count = 0;
-document.querySelectorAll(’.day-row:not(.weekend)’).forEach(row => {
-const iso = row.id.replace(‘row-’, ‘’);
-const hI  = document.getElementById(‘hours-’ + iso);
-const tS  = document.getElementById(‘type-’  + iso);
-if (hI) { hI.value = hrs; row.classList.add(‘has-hours’); count++; }
-if (tS) { tS.value = cat; tS.dataset.type = cat; }
+var count = 0;
+document.querySelectorAll(’.day-row:not(.weekend)’).forEach(function(row) {
+var iso = row.id.replace(‘row-’, ‘’);
+var hI  = document.getElementById(‘dh-’ + iso);
+var tS  = document.getElementById(‘ds-’ + iso);
+if (hI) { hI.value = hrs; row.classList.add(‘has-hrs’); count++; }
+if (tS) { tS.value = typ; tS.dataset.t = typ; }
 });
-updateHoursSummary();
-showToast(`✅ Applied to ${count} weekdays`, ‘success’);
+calcTotals();
+toast(‘✅ Applied to ’ + count + ’ weekdays’, ‘ok’);
 }
 
-function copyJobToAll() {
-const val = document.getElementById(‘copy-job-val’).value.trim();
-if (!val) { showToast(‘Enter a job ref to copy’, ‘error’); return; }
-let count = 0;
-document.querySelectorAll(’.day-notes’).forEach(input => { input.value = val; count++; });
-showToast(`✅ Job copied to ${count} rows`, ‘success’);
+function qfApplyJob() {
+var val = document.getElementById(‘qf-job’).value.trim();
+if (!val) { toast(‘Enter a job ref first’, ‘err’); return; }
+var count = 0;
+document.querySelectorAll(’.day-note’).forEach(function(inp) {
+inp.value = val; count++;
+});
+toast(‘✅ Job ref copied to ’ + count + ’ rows’, ‘ok’);
 }
 
-/* ─────────────────────────────────────────────────────
-RECEIPT COMPRESSION
-Uses Canvas API to shrink photos before storing.
-───────────────────────────────────────────────────── */
-function compressImage(file, maxWidth = 1200, quality = 0.75) {
-return new Promise((resolve, reject) => {
+/* ─── COLLECT FORM DATA ──────────────────────────── */
+function collect() {
+state.emp.name   = document.getElementById(‘emp-name’).value.trim();
+state.emp.fnFrom = document.getElementById(‘fn-start’).value;
+
+state.days = [];
+document.querySelectorAll(’.day-row’).forEach(function(row) {
+var iso  = row.id.replace(‘row-’, ‘’);
+var hrs  = parseFloat(document.getElementById(‘dh-’ + iso).value) || 0;
+var type = document.getElementById(‘ds-’ + iso).value;
+var note = document.getElementById(‘dn-’ + iso).value;
+var dn   = row.querySelector(’.day-name’) ? row.querySelector(’.day-name’).textContent : ‘’;
+state.days.push({ date:iso, dayName:dn, hours:hrs, type:type, note:note });
+});
+}
+
+/* ─── SAVE / LOAD DRAFT ──────────────────────────── */
+function saveProgress() {
+collect();
+dbSet(‘draft’, {
+state:   state,
+emailTo: document.getElementById(‘email-to’).value,
+emailCc: document.getElementById(‘email-cc’).value,
+at:      new Date().toISOString()
+});
+toast(‘✅ Draft saved’, ‘ok’);
+}
+
+function loadDraft() {
+dbGet(‘draft’, function(data) {
+if (!data || !data.state) return;
+state = data.state;
+
+```
+document.getElementById('emp-name').value  = state.emp.name  || '';
+document.getElementById('fn-start').value  = state.emp.fnFrom || '';
+if (data.emailTo) document.getElementById('email-to').value = data.emailTo;
+if (data.emailCc) document.getElementById('email-cc').value = data.emailCc;
+
+if (state.emp.fnFrom && state.emp.fnTo) {
+  document.getElementById('fn-end-display').textContent =
+    auDate(state.emp.fnTo) + ' (Sunday)';
+  buildDays();
+}
+
+renderExpenses();
+renderMileage();
+renderAllowances();
+updateHeader();
+
+var when = new Date(data.at).toLocaleString('en-AU', { timeStyle:'short', dateStyle:'short' });
+toast('📂 Draft restored (' + when + ')', 'ok');
+```
+
+});
+}
+
+function clearDraft() { dbDel(‘draft’); }
+
+/* ─── LAST SUBMISSION ────────────────────────────── */
+function saveSubmission(pdfBlob, filename) {
+blobToB64(pdfBlob, function(b64) {
+dbSet(‘last’, {
+state:    JSON.parse(JSON.stringify(state)),
+pdfB64:   b64,
+pdfName:  filename,
+at:       new Date().toISOString()
+});
+});
+}
+
+function loadLastSubmission() {
+dbGet(‘last’, function(data) {
+if (!data) { toast(‘No previous submission found’, ‘err’); return; }
+state = data.state;
+
+```
+document.getElementById('emp-name').value = state.emp.name || '';
+document.getElementById('fn-start').value = state.emp.fnFrom || '';
+
+if (state.emp.fnFrom && state.emp.fnTo) {
+  document.getElementById('fn-end-display').textContent =
+    auDate(state.emp.fnTo) + ' (Sunday)';
+  buildDays();
+}
+renderExpenses();
+renderMileage();
+renderAllowances();
+updateHeader();
+showTab(1);
+
+var when = new Date(data.at).toLocaleString('en-AU', { timeStyle:'short', dateStyle:'short' });
+toast('📂 Last submission loaded (' + when + ')', 'ok');
+```
+
+});
+}
+
+/* ─── IMAGE COMPRESSION ──────────────────────────── */
+function compressImage(file, cb) {
 if (!file.type.startsWith(‘image/’)) {
-// Non-image (PDF etc) — read as-is
-const reader = new FileReader();
-reader.onload  = e => resolve({
-data: e.target.result, type: file.type,
-originalSize: file.size, compressedSize: file.size
-});
-reader.onerror = reject;
-reader.readAsDataURL(file);
+var r = new FileReader();
+r.onload = function(e) { cb({ data: e.target.result, type: file.type }); };
+r.readAsDataURL(file);
 return;
 }
-
-```
-const img = new Image();
-const url = URL.createObjectURL(file);
-img.onload = () => {
-  URL.revokeObjectURL(url);
-  let w = img.naturalWidth, h = img.naturalHeight;
-  if (w > maxWidth) { h = Math.round(h * maxWidth / w); w = maxWidth; }
-  const canvas = document.createElement('canvas');
-  canvas.width = w; canvas.height = h;
-  canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-  const data = canvas.toDataURL('image/jpeg', quality);
-  resolve({ data, type: 'image/jpeg',
-            originalSize: file.size,
-            compressedSize: Math.round((data.length * 3) / 4) });
+var img = new Image();
+var url = URL.createObjectURL(file);
+img.onload = function() {
+URL.revokeObjectURL(url);
+var maxW = 1200;
+var w = img.naturalWidth, h = img.naturalHeight;
+if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+var canvas = document.createElement(‘canvas’);
+canvas.width = w; canvas.height = h;
+canvas.getContext(‘2d’).drawImage(img, 0, 0, w, h);
+cb({ data: canvas.toDataURL(‘image/jpeg’, 0.75), type: ‘image/jpeg’ });
 };
-img.onerror = () => reject(new Error('Could not load image'));
+img.onerror = function() {
+var r = new FileReader();
+r.onload = function(e) { cb({ data: e.target.result, type: file.type }); };
+r.readAsDataURL(file);
+};
 img.src = url;
-```
+}
 
+function onReceiptPicked(input) {
+var file = input.files[0];
+if (!file) return;
+var txt  = document.getElementById(‘receipt-txt’);
+var hint = document.getElementById(‘receipt-hint’);
+txt.textContent = ‘⏳ Processing…’;
+compressImage(file, function(r) {
+txt.textContent = ’✅ ’ + file.name;
+document.getElementById(‘receipt-lbl’).classList.add(‘has-file’);
+var kb = Math.round(file.size / 1024);
+hint.textContent = ‘Size: ~’ + kb + ’ KB’;
 });
 }
 
-async function onReceiptSelected(input) {
-const file  = input.files[0];
-if (!file) return;
-const label = document.getElementById(‘receipt-label’);
-const hint  = document.getElementById(‘receipt-size-hint’);
-document.getElementById(‘receipt-upload-text’).textContent = ‘⏳ Processing…’;
-try {
-const r    = await compressImage(file);
-const pct  = file.type.startsWith(‘image/’)
-? Math.round((1 - r.compressedSize / r.originalSize) * 100) : 0;
-document.getElementById(‘receipt-upload-text’).textContent = ’✅ ’ + file.name;
-label.classList.add(‘has-file’);
-hint.textContent = pct > 5
-? `${fmtBytes(r.originalSize)} → ${fmtBytes(r.compressedSize)} (saved ${pct}%)`
-: `Size: ${fmtBytes(r.originalSize)}`;
-} catch {
-document.getElementById(‘receipt-upload-text’).textContent = ’📎 ’ + file.name;
-hint.textContent = ‘’;
-}
-}
+/* ─── EXPENSES ───────────────────────────────────── */
+function addExpense() {
+var type   = document.getElementById(‘exp-type’).value;
+var amount = parseFloat(document.getElementById(‘exp-amount’).value);
+var date   = document.getElementById(‘exp-date’).value;
+var desc   = document.getElementById(‘exp-desc’).value.trim();
+var file   = document.getElementById(‘exp-receipt’).files[0];
 
-function fmtBytes(b) {
-if (b < 1024)      return b + ’ B’;
-if (b < 1048576)   return (b/1024).toFixed(0) + ’ KB’;
-return (b/1048576).toFixed(1) + ’ MB’;
-}
+if (!type)         { toast(‘Select a type’, ‘err’); return; }
+if (!amount||amount<=0) { toast(‘Enter a valid amount’, ‘err’); return; }
+if (!date)         { toast(‘Select a date’, ‘err’); return; }
+if (!file)         { toast(‘Receipt photo required’, ‘err’); return; }
 
-/* ─────────────────────────────────────────────────────
-EXPENSES
-───────────────────────────────────────────────────── */
-async function addExpense() {
-const type   = document.getElementById(‘exp-type’).value;
-const amount = document.getElementById(‘exp-amount’).value;
-const date   = document.getElementById(‘exp-date’).value;
-const desc   = document.getElementById(‘exp-desc’).value.trim();
-const file   = document.getElementById(‘exp-receipt’).files[0];
+var btn = document.querySelector(’#page-2 .add-box .btn-navy’);
+btn.disabled = true; btn.textContent = ‘⏳ Processing…’;
 
-if (!type)                             { showToast(‘Select a type’, ‘error’); return; }
-if (!amount || parseFloat(amount) <= 0){ showToast(‘Enter a valid amount’, ‘error’); return; }
-if (!date)                             { showToast(‘Select a date’, ‘error’); return; }
-if (!file)                             { showToast(‘⚠️ Receipt photo required’, ‘error’); return; }
-
-const btn = document.querySelector(’#tab-expenses .add-form .btn–primary’);
-if (btn) { btn.textContent = ‘⏳ Processing…’; btn.disabled = true; }
-
-try {
-const compressed = await compressImage(file);
+compressImage(file, function(compressed) {
 state.expenses.push({
 id:          Date.now(),
-type,
-amount:      parseFloat(amount),
-date,
-desc,
+type:        type,
+amount:      amount,
+date:        date,
+desc:        desc,
 receiptName: file.name,
-receiptData: compressed.data,   // base64 string stored inside the expense object
+receiptData: compressed.data,
 receiptType: compressed.type
 });
 renderExpenses();
-clearExpenseForm();
-showToast(‘✅ Expense added’, ‘success’);
-} catch(e) {
-showToast(’Could not process receipt: ’ + e.message, ‘error’);
-} finally {
-if (btn) { btn.textContent = ‘Add Expense’; btn.disabled = false; }
-}
+clearExpForm();
+toast(‘✅ Expense added’, ‘ok’);
+btn.disabled = false; btn.textContent = ‘Add Expense’;
+});
 }
 
 function renderExpenses() {
-const el = document.getElementById(‘expense-list’);
+var el = document.getElementById(‘exp-list’);
 if (!state.expenses.length) {
-el.innerHTML = ‘<div class="empty-state">No expenses added yet</div>’;
+el.innerHTML = ‘<div class="empty">No expenses added yet</div>’;
 return;
 }
-el.innerHTML = state.expenses.map((e,i) => ` <div class="item-card"> <div class="item-main"> <div class="item-type">${escHtml(e.type)}</div> <div class="item-meta">${fmtDate(e.date)}${e.desc ? ' · '+escHtml(e.desc) : ''}</div> <div class="item-receipt">📎 ${escHtml(e.receiptName)}</div> </div> <div class="item-side"> <div class="item-amount">$${e.amount.toFixed(2)}</div> <button class="item-remove" onclick="removeExpense(${i})">✕</button> </div> </div>`).join(’’);
+el.innerHTML = state.expenses.map(function(e, i) {
+return ‘<div class="item-card">’ +
+‘<div class="item-main">’ +
+‘<div class="item-type">’ + esc(e.type) + ‘</div>’ +
+‘<div class="item-meta">’ + auDate(e.date) + (e.desc ? ’ · ’ + esc(e.desc) : ‘’) + ‘</div>’ +
+‘<div class="item-receipt">📎 ’ + esc(e.receiptName) + ‘</div>’ +
+‘</div>’ +
+‘<div class="item-side">’ +
+‘<div class="item-amt">$’ + e.amount.toFixed(2) + ‘</div>’ +
+‘<button class="item-del" onclick="delExpense(' + i + ')">✕</button>’ +
+‘</div>’ +
+‘</div>’;
+}).join(’’);
 }
 
-function removeExpense(i) { state.expenses.splice(i,1); renderExpenses(); }
+function delExpense(i) { state.expenses.splice(i, 1); renderExpenses(); }
 
-function clearExpenseForm() {
-[‘exp-type’,‘exp-amount’,‘exp-desc’].forEach(id => document.getElementById(id).value = ‘’);
-document.getElementById(‘exp-date’).value = toISO(new Date());
+function clearExpForm() {
+document.getElementById(‘exp-type’).value   = ‘’;
+document.getElementById(‘exp-amount’).value = ‘’;
+document.getElementById(‘exp-date’).value   = todayISO();
+document.getElementById(‘exp-desc’).value   = ‘’;
 document.getElementById(‘exp-receipt’).value = ‘’;
-document.getElementById(‘receipt-upload-text’).textContent = ‘Tap to photograph or upload receipt’;
-document.getElementById(‘receipt-label’)?.classList.remove(‘has-file’);
-document.getElementById(‘receipt-size-hint’).textContent = ‘’;
+document.getElementById(‘receipt-txt’).textContent = ‘Tap to photograph or upload’;
+document.getElementById(‘receipt-lbl’).classList.remove(‘has-file’);
+document.getElementById(‘receipt-hint’).textContent = ‘’;
 }
 
-/* ─────────────────────────────────────────────────────
-MILEAGE
-───────────────────────────────────────────────────── */
-function calcMileageTotal() {
-const km   = parseFloat(document.getElementById(‘mil-km’).value)   || 0;
-const rate = parseFloat(document.getElementById(‘mil-rate’).value) || 0;
+/* ─── MILEAGE ────────────────────────────────────── */
+function calcMil() {
+var km   = parseFloat(document.getElementById(‘mil-km’).value)   || 0;
+var rate = parseFloat(document.getElementById(‘mil-rate’).value) || 0;
 document.getElementById(‘mil-total’).textContent = ‘$’ + (km * rate).toFixed(2);
 }
 
 function addMileage() {
-const date = document.getElementById(‘mil-date’).value;
-const from = document.getElementById(‘mil-from’).value.trim();
-const to   = document.getElementById(‘mil-to’).value.trim();
-const km   = parseFloat(document.getElementById(‘mil-km’).value);
-const rate = parseFloat(document.getElementById(‘mil-rate’).value) || 0;
+var date = document.getElementById(‘mil-date’).value;
+var from = document.getElementById(‘mil-from’).value.trim();
+var to   = document.getElementById(‘mil-to’).value.trim();
+var km   = parseFloat(document.getElementById(‘mil-km’).value);
+var rate = parseFloat(document.getElementById(‘mil-rate’).value) || 0;
 
-if (!date)          { showToast(‘Select a date’, ‘error’); return; }
-if (!from)          { showToast(‘Enter a From location’, ‘error’); return; }
-if (!to)            { showToast(‘Enter a To location’, ‘error’); return; }
-if (!km || km <= 0) { showToast(‘Enter a valid distance’, ‘error’); return; }
+if (!date)         { toast(‘Select a date’, ‘err’); return; }
+if (!from)         { toast(‘Enter a From location’, ‘err’); return; }
+if (!to)           { toast(‘Enter a To location’, ‘err’); return; }
+if (!km || km <= 0){ toast(‘Enter a valid distance’, ‘err’); return; }
 
-state.mileage.push({ id: Date.now(), date, from, to, km, rate, total: km * rate });
+state.mileage.push({ id:Date.now(), date:date, from:from, to:to, km:km, rate:rate, total:km*rate });
 renderMileage();
-clearMileageForm();
-showToast(‘✅ Trip added’, ‘success’);
+clearMilForm();
+toast(‘✅ Trip added’, ‘ok’);
 }
 
 function renderMileage() {
-const el = document.getElementById(‘mileage-list’);
+var el = document.getElementById(‘mil-list’);
 if (!state.mileage.length) {
-el.innerHTML = ‘<div class="empty-state">No trips added yet</div>’;
+el.innerHTML = ‘<div class="empty">No trips added yet</div>’;
 return;
 }
-el.innerHTML = state.mileage.map((m,i) => ` <div class="item-card"> <div class="item-main"> <div class="item-type">${escHtml(m.from)} → ${escHtml(m.to)}</div> <div class="item-meta">${fmtDate(m.date)} · ${m.km} km @ $${m.rate.toFixed(2)}/km</div> </div> <div class="item-side"> <div class="item-amount">$${m.total.toFixed(2)}</div> <button class="item-remove" onclick="removeMileage(${i})">✕</button> </div> </div>`).join(’’);
+el.innerHTML = state.mileage.map(function(m, i) {
+return ‘<div class="item-card">’ +
+‘<div class="item-main">’ +
+‘<div class="item-type">’ + esc(m.from) + ’ → ’ + esc(m.to) + ‘</div>’ +
+‘<div class="item-meta">’ + auDate(m.date) + ’ · ’ + m.km + ’ km @ $’ + m.rate.toFixed(2) + ‘/km</div>’ +
+‘</div>’ +
+‘<div class="item-side">’ +
+‘<div class="item-amt">$’ + m.total.toFixed(2) + ‘</div>’ +
+‘<button class="item-del" onclick="delMileage(' + i + ')">✕</button>’ +
+‘</div>’ +
+‘</div>’;
+}).join(’’);
 }
 
-function removeMileage(i) { state.mileage.splice(i,1); renderMileage(); }
+function delMileage(i) { state.mileage.splice(i, 1); renderMileage(); }
 
-function clearMileageForm() {
-document.getElementById(‘mil-date’).value = toISO(new Date());
-[‘mil-from’,‘mil-to’,‘mil-km’].forEach(id => document.getElementById(id).value = ‘’);
+function clearMilForm() {
+document.getElementById(‘mil-date’).value = todayISO();
+document.getElementById(‘mil-from’).value = ‘’;
+document.getElementById(‘mil-to’).value   = ‘’;
+document.getElementById(‘mil-km’).value   = ‘’;
 document.getElementById(‘mil-rate’).value = ‘0.88’;
 document.getElementById(‘mil-total’).textContent = ‘$0.00’;
 }
 
-/* ─────────────────────────────────────────────────────
-ALLOWANCES
-───────────────────────────────────────────────────── */
+/* ─── ALLOWANCES ─────────────────────────────────── */
 function addAllowance() {
-const type   = document.getElementById(‘all-type’).value;
-const amount = parseFloat(document.getElementById(‘all-amount’).value);
-const notes  = document.getElementById(‘all-notes’).value.trim();
+var type   = document.getElementById(‘all-type’).value;
+var amount = parseFloat(document.getElementById(‘all-amount’).value);
+var notes  = document.getElementById(‘all-notes’).value.trim();
 
-if (!type)             { showToast(‘Select a type’, ‘error’); return; }
-if (!amount||amount<=0){ showToast(‘Enter a valid amount’, ‘error’); return; }
+if (!type)          { toast(‘Select a type’, ‘err’); return; }
+if (!amount||amount<=0){ toast(‘Enter a valid amount’, ‘err’); return; }
 
-state.allowances.push({ id: Date.now(), type, amount, notes });
+state.allowances.push({ id:Date.now(), type:type, amount:amount, notes:notes });
 renderAllowances();
-clearAllowanceForm();
-showToast(‘✅ Allowance added’, ‘success’);
+clearAllForm();
+toast(‘✅ Allowance added’, ‘ok’);
 }
 
 function renderAllowances() {
-const el = document.getElementById(‘allowance-list’);
+var el = document.getElementById(‘all-list’);
 if (!state.allowances.length) {
-el.innerHTML = ‘<div class="empty-state">No allowances added yet</div>’;
+el.innerHTML = ‘<div class="empty">No allowances added yet</div>’;
 return;
 }
-el.innerHTML = state.allowances.map((a,i) => ` <div class="item-card"> <div class="item-main"> <div class="item-type">${escHtml(a.type)}</div> <div class="item-meta">${a.notes ? escHtml(a.notes) : 'No notes'}</div> </div> <div class="item-side"> <div class="item-amount">$${a.amount.toFixed(2)}</div> <button class="item-remove" onclick="removeAllowance(${i})">✕</button> </div> </div>`).join(’’);
+el.innerHTML = state.allowances.map(function(a, i) {
+return ‘<div class="item-card">’ +
+‘<div class="item-main">’ +
+‘<div class="item-type">’ + esc(a.type) + ‘</div>’ +
+‘<div class="item-meta">’ + (a.notes || ‘No notes’) + ‘</div>’ +
+‘</div>’ +
+‘<div class="item-side">’ +
+‘<div class="item-amt">$’ + a.amount.toFixed(2) + ‘</div>’ +
+‘<button class="item-del" onclick="delAllowance(' + i + ')">✕</button>’ +
+‘</div>’ +
+‘</div>’;
+}).join(’’);
 }
 
-function removeAllowance(i) { state.allowances.splice(i,1); renderAllowances(); }
+function delAllowance(i) { state.allowances.splice(i, 1); renderAllowances(); }
 
-function clearAllowanceForm() {
-[‘all-type’,‘all-amount’,‘all-notes’].forEach(id => document.getElementById(id).value = ‘’);
+function clearAllForm() {
+document.getElementById(‘all-type’).value   = ‘’;
+document.getElementById(‘all-amount’).value = ‘’;
+document.getElementById(‘all-notes’).value  = ‘’;
 }
 
-/* ─────────────────────────────────────────────────────
-COLLECT FORM DATA
-───────────────────────────────────────────────────── */
-function collectFormData() {
-state.employee.name          = document.getElementById(‘employee-name’).value.trim();
-state.employee.fortnightFrom = document.getElementById(‘fortnight-from’).value;
-
-state.dailyHours = [];
-document.querySelectorAll(’.day-row’).forEach(row => {
-const iso     = row.id.replace(‘row-’, ‘’);
-const hours   = parseFloat(document.getElementById(‘hours-’ + iso)?.value) || 0;
-const type    = document.getElementById(‘type-’  + iso)?.value || ‘work’;
-const jobNote = document.getElementById(‘notes-’ + iso)?.value || ‘’;
-const dayName = row.querySelector(’.day-name’)?.textContent || ‘’;
-state.dailyHours.push({ date: iso, day: dayName, hours, type, jobNote });
-});
-}
-
-/* ─────────────────────────────────────────────────────
-SAVE DRAFT TO INDEXEDDB
-Saves entire state including receipt images.
-───────────────────────────────────────────────────── */
-async function saveProgress() {
-collectFormData();
-try {
-await dbPut(‘drafts’, {
-id:      ‘current’,
-state,
-emailTo: document.getElementById(‘email-to’)?.value  || ‘’,
-emailCc: document.getElementById(‘email-cc’)?.value  || ‘’,
-savedAt: new Date().toISOString()
-});
-showToast(‘✅ Draft saved’, ‘success’);
-} catch(e) {
-console.error(‘Save failed:’, e);
-showToast(‘⚠️ Could not save draft’, ‘error’);
-}
-}
-
-async function loadDraft() {
-try {
-const data = await dbGet(‘drafts’, ‘current’);
-if (!data?.state) return;
-
-```
-state = data.state;
-document.getElementById('employee-name').value  = state.employee.name || '';
-document.getElementById('fortnight-from').value = state.employee.fortnightFrom || '';
-if (data.emailTo) document.getElementById('email-to').value = data.emailTo;
-if (data.emailCc) document.getElementById('email-cc').value = data.emailCc;
-
-if (state.employee.fortnightFrom && state.employee.fortnightTo) {
-  document.getElementById('fortnight-to-display').textContent =
-    fmtDate(state.employee.fortnightTo) + ' (Sunday)';
-  buildDailyTable();
-}
-
-renderExpenses(); renderMileage(); renderAllowances();
-updateHeaderStatus();
-
-const when = new Date(data.savedAt).toLocaleString('en-AU', { timeStyle:'short', dateStyle:'short' });
-showToast(`📂 Draft restored (${when})`, 'success');
-```
-
-} catch(e) {
-console.warn(‘Load draft failed:’, e);
-}
-}
-
-async function cleanupDraft() {
-try { await dbDelete(‘drafts’, ‘current’); } catch{}
-}
-
-/* ─────────────────────────────────────────────────────
-SAVE LAST SUBMISSION TO INDEXEDDB
-Stores the full state of the most recent submission,
-including all receipt images, so the user can review
-or restore it later.
-───────────────────────────────────────────────────── */
-async function saveLastSubmission(pdfBlob, filename) {
-try {
-// Convert PDF blob to base64 so we can store it in IndexedDB
-const pdfBase64 = await blobToBase64(pdfBlob);
-await dbPut(‘submissions’, {
-id:          ‘last’,
-state:       JSON.parse(JSON.stringify(state)), // deep copy
-pdfBase64,
-pdfFilename: filename,
-submittedAt: new Date().toISOString()
-});
-} catch(e) {
-console.warn(‘Could not save submission record:’, e);
-}
-}
-
-/* ─────────────────────────────────────────────────────
-LOAD LAST SUBMISSION (for View/Edit)
-───────────────────────────────────────────────────── */
-async function loadLastSubmission() {
-try {
-const data = await dbGet(‘submissions’, ‘last’);
-if (!data) { showToast(‘No previous submission found’, ‘error’); return; }
-
-```
-// Restore state from the saved submission
-state = data.state;
-
-// Restore form fields
-document.getElementById('employee-name').value  = state.employee.name || '';
-document.getElementById('fortnight-from').value = state.employee.fortnightFrom || '';
-
-if (state.employee.fortnightFrom && state.employee.fortnightTo) {
-  document.getElementById('fortnight-to-display').textContent =
-    fmtDate(state.employee.fortnightTo) + ' (Sunday)';
-  buildDailyTable();
-}
-
-renderExpenses(); renderMileage(); renderAllowances();
-updateHeaderStatus();
-
-// Go to the timesheet tab so user can review/edit
-gotoStep('tab-timesheet');
-
-const when = new Date(data.submittedAt).toLocaleString('en-AU', { timeStyle:'short', dateStyle:'short' });
-showToast(`📂 Last submission loaded (${when})`, 'success');
-```
-
-} catch(e) {
-console.warn(‘Load submission failed:’, e);
-showToast(‘Could not load last submission’, ‘error’);
-}
-}
-
-/* ─────────────────────────────────────────────────────
-REVIEW SCREEN
-───────────────────────────────────────────────────── */
+/* ─── BUILD REVIEW ───────────────────────────────── */
 function buildReview() {
-collectFormData();
+collect();
 
-const expTotal   = state.expenses.reduce((s,e) => s + e.amount, 0);
-const milTotal   = state.mileage.reduce((s,m) => s + m.total, 0);
-const allTotal   = state.allowances.reduce((s,a) => s + a.amount, 0);
-const grandTotal = expTotal + milTotal + allTotal;
+var expTotal = state.expenses.reduce(function(s,e)  { return s + e.amount; }, 0);
+var milTotal = state.mileage.reduce(function(s,m)   { return s + m.total;  }, 0);
+var allTotal = state.allowances.reduce(function(s,a){ return s + a.amount; }, 0);
+var grand    = expTotal + milTotal + allTotal;
 
-const hByType = {};
-let totalHrs = 0;
-state.dailyHours.forEach(d => {
+var hByType = {};
+var totalHrs = 0;
+state.days.forEach(function(d) {
 if (d.hours > 0) {
-hByType[d.type] = (hByType[d.type]||0) + d.hours;
+hByType[d.type] = (hByType[d.type] || 0) + d.hours;
 totalHrs += d.hours;
 }
 });
 
-let html = `<div class="rv-section"> <div class="rv-title">Employee</div> <div class="rv-row"><span class="rv-key">Name</span><span class="rv-val">${escHtml(state.employee.name)||'—'}</span></div> <div class="rv-row"><span class="rv-key">Fortnight</span><span class="rv-val">${fmtDate(state.employee.fortnightFrom)} – ${fmtDate(state.employee.fortnightTo)}</span></div> </div> <div class="rv-section"> <div class="rv-title">Hours — ${totalHrs.toFixed(1)} total</div> ${Object.entries(hByType).map(([k,v]) =>`
-<div class="rv-row">
-<span class="rv-key">${typeLabel(k)}</span>
-<span class="rv-val">${v.toFixed(1)} hrs</span>
-</div>`).join('')} </div>`;
+var html = ‘<div class="rv-block">’ +
+‘<div class="rv-head">Employee</div>’ +
+rvRow(‘Name’, esc(state.emp.name) || ‘—’) +
+rvRow(‘Fortnight’, auDate(state.emp.fnFrom) + ’ – ’ + auDate(state.emp.fnTo)) +
+‘</div>’;
 
-if (state.expenses.length) html += `<div class="rv-section"> <div class="rv-title">Expenses (${state.expenses.length} items)</div> ${state.expenses.map(e =>`
-<div class="rv-row">
-<span class="rv-key">${escHtml(e.type)}</span>
-<span class="rv-val">$${e.amount.toFixed(2)}</span>
-</div>`).join('')} <div class="rv-row"><span class="rv-key"><strong>Subtotal</strong></span><span class="rv-val"><strong>$${expTotal.toFixed(2)}</strong></span></div> </div>`;
+html += ‘<div class="rv-block"><div class="rv-head">Hours — ’ + totalHrs.toFixed(1) + ’ total</div>’;
+Object.keys(hByType).forEach(function(k) {
+html += rvRow(TYPE_LABELS[k] || k, hByType[k].toFixed(1) + ’ hrs’);
+});
+html += ‘</div>’;
 
-if (state.mileage.length) html += `<div class="rv-section"> <div class="rv-title">Mileage (${state.mileage.length} trips)</div> ${state.mileage.map(m =>`
-<div class="rv-row">
-<span class="rv-key">${escHtml(m.from)} → ${escHtml(m.to)}</span>
-<span class="rv-val">$${m.total.toFixed(2)}</span>
-</div>`).join('')} <div class="rv-row"><span class="rv-key"><strong>Subtotal</strong></span><span class="rv-val"><strong>$${milTotal.toFixed(2)}</strong></span></div> </div>`;
+if (state.expenses.length) {
+html += ‘<div class="rv-block"><div class="rv-head">Expenses (’ + state.expenses.length + ‘)</div>’;
+state.expenses.forEach(function(e) { html += rvRow(esc(e.type), ‘$’ + e.amount.toFixed(2)); });
+html += rvRow(’<strong>Subtotal</strong>’, ‘<strong>$’ + expTotal.toFixed(2) + ‘</strong>’);
+html += ‘</div>’;
+}
 
-if (state.allowances.length) html += `<div class="rv-section"> <div class="rv-title">Allowances</div> ${state.allowances.map(a =>`
-<div class="rv-row">
-<span class="rv-key">${escHtml(a.type)}</span>
-<span class="rv-val">$${a.amount.toFixed(2)}</span>
-</div>`).join('')} <div class="rv-row"><span class="rv-key"><strong>Subtotal</strong></span><span class="rv-val"><strong>$${allTotal.toFixed(2)}</strong></span></div> </div>`;
+if (state.mileage.length) {
+html += ‘<div class="rv-block"><div class="rv-head">Mileage (’ + state.mileage.length + ‘)</div>’;
+state.mileage.forEach(function(m) { html += rvRow(esc(m.from) + ’ → ’ + esc(m.to), ‘$’ + m.total.toFixed(2)); });
+html += rvRow(’<strong>Subtotal</strong>’, ‘<strong>$’ + milTotal.toFixed(2) + ‘</strong>’);
+html += ‘</div>’;
+}
 
-html += ` <div class="rv-total"> <span class="rv-total-label">💰 Grand Total</span> <span class="rv-total-amt">$${grandTotal.toFixed(2)}</span> </div>`;
+if (state.allowances.length) {
+html += ‘<div class="rv-block"><div class="rv-head">Allowances</div>’;
+state.allowances.forEach(function(a) { html += rvRow(esc(a.type), ‘$’ + a.amount.toFixed(2)); });
+html += rvRow(’<strong>Subtotal</strong>’, ‘<strong>$’ + allTotal.toFixed(2) + ‘</strong>’);
+html += ‘</div>’;
+}
+
+html += ‘<div class="rv-grand">’ +
+‘<span class="rv-grand-lbl">💰 Grand Total</span>’ +
+‘<span class="rv-grand-amt">$’ + grand.toFixed(2) + ‘</span>’ +
+‘</div>’;
 
 document.getElementById(‘review-content’).innerHTML = html;
 
-const hasEJS = settings.ejsPublicKey && settings.ejsServiceId && settings.ejsTemplateId;
-document.getElementById(‘emailjs-method’).style.display      = hasEJS ? ‘block’ : ‘none’;
-document.getElementById(‘emailjs-to-display’).textContent     = settings.emailTo || ‘—’;
-document.getElementById(‘mailto-method’).style.display        = hasEJS ? ‘none’ : ‘block’;
-document.getElementById(‘submit-note-emailjs’).style.display  = hasEJS ? ‘block’ : ‘none’;
-document.getElementById(‘submit-note-manual’).style.display   = hasEJS ? ‘none’  : ‘block’;
+/* Show/hide email method */
+var hasEJS = cfg.ejsKey && cfg.ejsSvc && cfg.ejsTpl;
+document.getElementById(‘ejs-block’).style.display    = hasEJS ? ‘block’ : ‘none’;
+document.getElementById(‘manual-block’).style.display = hasEJS ? ‘none’  : ‘block’;
+document.getElementById(‘submit-note’).style.display  = hasEJS ? ‘none’  : ‘block’;
+if (hasEJS) document.getElementById(‘ejs-to’).textContent = cfg.emailTo || ‘—’;
 
-document.getElementById(‘email-to’).value = settings.emailTo || ‘’;
-document.getElementById(‘email-cc’).value = settings.emailCc || ‘’;
+document.getElementById(‘email-to’).value = cfg.emailTo || ‘’;
+document.getElementById(‘email-cc’).value = cfg.emailCc || ‘’;
 }
 
-/* ─────────────────────────────────────────────────────
-VALIDATE
-───────────────────────────────────────────────────── */
+function rvRow(k, v) {
+return ‘<div class="rv-row"><span class="rv-k">’ + k + ‘</span><span class="rv-v">’ + v + ‘</span></div>’;
+}
+
+/* ─── VALIDATE ───────────────────────────────────── */
 function validate() {
-collectFormData();
-if (!state.employee.name) {
-showToast(‘⚠️ Enter your name’, ‘error’); gotoStep(‘tab-timesheet’); return false;
-}
-if (!state.employee.fortnightFrom) {
-showToast(‘⚠️ Select a fortnight start date’, ‘error’); gotoStep(‘tab-timesheet’); return false;
-}
-const hasEJS = settings.ejsPublicKey && settings.ejsServiceId && settings.ejsTemplateId;
+collect();
+if (!state.emp.name)   { toast(‘Enter your name’, ‘err’);           showTab(1); return false; }
+if (!state.emp.fnFrom) { toast(‘Select a fortnight start’, ‘err’);  showTab(1); return false; }
+var hasEJS = cfg.ejsKey && cfg.ejsSvc && cfg.ejsTpl;
 if (!hasEJS) {
-const et = document.getElementById(‘email-to’).value;
-if (!et || !et.includes(’@’)) {
-showToast(‘⚠️ Enter a valid email address’, ‘error’); gotoStep(‘tab-review’); return false;
-}
+var et = document.getElementById(‘email-to’).value;
+if (!et || et.indexOf(’@’) < 0) { toast(‘Enter a valid email’, ‘err’); showTab(5); return false; }
 }
 return true;
 }
 
-/* ─────────────────────────────────────────────────────
-SUBMIT
-───────────────────────────────────────────────────── */
-async function submitForm() {
+/* ─── SUBMIT ─────────────────────────────────────── */
+function submitForm() {
 if (!validate()) return;
 
-const btn = document.querySelector(’.btn–submit’);
-if (btn) { btn.disabled = true; btn.textContent = ‘⏳ Preparing…’; }
+var btn = document.getElementById(‘submit-btn’);
+btn.disabled = true;
+btn.textContent = ‘⏳ Generating PDF…’;
+setLoading(‘Generating PDF…’);
 
-showLoading(‘Generating PDF…’);
-
+/* Small delay so the loading screen renders before heavy PDF work */
+setTimeout(function() {
 try {
-// 1. Generate PDF — returns a jsPDF doc object (not just a blob)
-//    We need the doc object so we can use .save() for iOS
-const { doc, blob, filename } = await generatePDF();
+var result = makePDF();
+var filename = makeFilename();
+var hasEJS = cfg.ejsKey && cfg.ejsSvc && cfg.ejsTpl;
 
 ```
-// 2. Save a copy of this submission (with receipts) to IndexedDB
-await saveLastSubmission(blob, filename);
+  saveSubmission(result.blob, filename);
 
-const hasEJS = settings.ejsPublicKey && settings.ejsServiceId && settings.ejsTemplateId;
-
-if (hasEJS) {
-  setLoadingText('Sending email…');
-  await sendViaEmailJS(blob, filename);
+  if (hasEJS) {
+    setLoading('Sending email…');
+    blobToB64(result.blob, function(b64) {
+      sendEmail(b64, filename,
+        function() {
+          hideLoading();
+          sharePDF(result.doc, result.blob, filename);
+          showSuccess(filename, true);
+          cfg.lastFnEnd = state.emp.fnTo;
+          saveCfg(true);
+          clearDraft();
+          btn.disabled = false; btn.textContent = '🚀 Submit Timesheet';
+        },
+        function(err) {
+          hideLoading();
+          toast('EmailJS error: ' + err, 'err');
+          btn.disabled = false; btn.textContent = '🚀 Submit Timesheet';
+        }
+      );
+    });
+  } else {
+    hideLoading();
+    sharePDF(result.doc, result.blob, filename);
+    setTimeout(function() { openMail(filename); }, 800);
+    showSuccess(filename, false);
+    cfg.lastFnEnd = state.emp.fnTo;
+    saveCfg(true);
+    clearDraft();
+    btn.disabled = false; btn.textContent = '🚀 Submit Timesheet';
+  }
+} catch(e) {
   hideLoading();
-  // On iOS, also offer to save/share the PDF after auto-send
-  await sharePDF(doc, blob, filename);
-  onSubmitSuccess(filename, true);
-} else {
-  hideLoading();
-  // Share/save the PDF first, then open email
-  await sharePDF(doc, blob, filename);
-  setTimeout(() => openEmailClient(filename), 800);
-  onSubmitSuccess(filename, false);
+  toast('Error: ' + e.message, 'err');
+  btn.disabled = false; btn.textContent = '🚀 Submit Timesheet';
 }
-
-settings.lastSubmittedFortnightEnd = state.employee.fortnightTo;
-saveSettings(true);
-await cleanupDraft();
 ```
 
-} catch(err) {
-hideLoading();
-console.error(‘Submit error:’, err);
-showToast(’❌ ’ + err.message, ‘error’);
-} finally {
-if (btn) { btn.disabled = false; btn.textContent = ‘🚀 Submit Timesheet’; }
-}
+}, 80);
 }
 
-/* ─────────────────────────────────────────────────────
-PDF SHARING — THE CORRECT WAY FOR iOS
-
-navigator.share() with files is the ONLY reliable way
-to get a file from a browser into iOS Files / Mail.
-
-On Android/desktop we fall back to a download link.
-jsPDF’s .save() method also works well on iOS Safari
-as a last resort — it triggers the native share sheet.
-───────────────────────────────────────────────────── */
-async function sharePDF(doc, blob, filename) {
-// Try Web Share API with files (iOS 15+, Android Chrome)
+/* ─── PDF SHARING (iOS fix) ──────────────────────── */
+function sharePDF(doc, blob, filename) {
+/* Try Web Share API with file (iOS 15+) */
 if (navigator.share && navigator.canShare) {
-try {
-const file = new File([blob], filename, { type: ‘application/pdf’ });
+var file = new File([blob], filename, { type: ‘application/pdf’ });
 if (navigator.canShare({ files: [file] })) {
-await navigator.share({
-files:   [file],
-title:   ‘Timesheet Submission’,
-text:    `VB Built FieldSheet — ${state.employee.name}`
+navigator.share({ files:[file], title:‘Timesheet Submission’, text:’VB Built FieldSheet — ’ + state.emp.name })
+.catch(function(e) {
+if (e.name !== ‘AbortError’) doc.save(filename);
 });
-return; // Done — user chose where to save/send
-}
-} catch(e) {
-// User cancelled share sheet — that’s fine, continue
-if (e.name === ‘AbortError’) return;
-console.warn(‘Web Share failed:’, e);
+return;
 }
 }
-
-// Fallback: jsPDF .save() — triggers browser download
-// On iOS Safari this opens the PDF in the browser with
-// a “Save to Files” option in the share menu
-try {
+/* Fallback: jsPDF .save() — triggers iOS Save to Files */
 doc.save(filename);
-} catch(e) {
-// Last resort: object URL download
-downloadBlob(blob, filename);
-}
 }
 
-function downloadBlob(blob, filename) {
-const url = URL.createObjectURL(blob);
-const a   = document.createElement(‘a’);
-a.href = url; a.download = filename; a.style.display = ‘none’;
-document.body.appendChild(a);
-a.click();
-setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1500);
-}
-
-function onSubmitSuccess(filename, autoSent) {
-const msg = autoSent
-? `Sent automatically to ${settings.emailTo}`
-: ‘PDF saved/shared. Attach it in your email app and send.’;
-
+/* ─── SUCCESS / NEXT FORTNIGHT ───────────────────── */
+function showSuccess(filename, autoSent) {
+var msg = autoSent
+? ’Sent automatically to ’ + cfg.emailTo
+: ‘PDF saved to your device. Attach it in your email app.’;
 document.getElementById(‘success-msg’).textContent = msg;
-document.getElementById(‘pdf-filename-display’).textContent = filename;
+document.getElementById(‘success-file’).textContent = filename;
 
-const nextStart  = getNextFortnightStart(state.employee.fortnightTo);
-const nextEndDt  = parseLocalDate(nextStart);
-nextEndDt.setDate(nextEndDt.getDate() + 13);
-const nextEndISO = toISO(nextEndDt);
+var ns  = nextFnStart(state.emp.fnTo);
+var ned = localDate(ns);
+ned.setDate(ned.getDate() + 13);
+document.getElementById(‘success-next’).innerHTML =
+‘<strong>Next fortnight:</strong><br>’ + auDate(ns) + ’ → ’ + auDate(isoDate(ned));
 
-document.getElementById(‘success-next-info’).innerHTML = `<strong>Next fortnight:</strong><br> ${fmtDate(nextStart)} → ${fmtDate(nextEndISO)}`;
-
-document.getElementById(‘success-overlay’).classList.remove(‘hidden’);
-if (settings.reminders) scheduleReminder(nextStart, nextEndISO);
+document.getElementById(‘success-overlay’).style.display = ‘flex’;
 }
 
-/* ─────────────────────────────────────────────────────
-EMAILJS
-───────────────────────────────────────────────────── */
-async function sendViaEmailJS(pdfBlob, filename) {
-const pdfBase64 = await blobToBase64(pdfBlob);
-const totalHrs  = state.dailyHours.reduce((s,d) => s+d.hours, 0);
-const expTotal  = state.expenses.reduce((s,e) => s+e.amount, 0);
-const milTotal  = state.mileage.reduce((s,m) => s+m.total, 0);
-const allTotal  = state.allowances.reduce((s,a) => s+a.amount, 0);
-const grand     = expTotal + milTotal + allTotal;
-const emailTo   = settings.emailTo || document.getElementById(‘email-to’).value;
-const emailCc   = settings.emailCc || document.getElementById(‘email-cc’).value;
+function closeSuccess() {
+document.getElementById(‘success-overlay’).style.display = ‘none’;
+}
 
-emailjs.init(settings.ejsPublicKey);
+function nextFortnight() {
+var ns = cfg.lastFnEnd ? nextFnStart(cfg.lastFnEnd) : ‘’;
 
-const result = await emailjs.send(settings.ejsServiceId, settings.ejsTemplateId, {
-to_email:      emailTo,
-cc_email:      emailCc,
-subject:       `Timesheet — ${state.employee.name} — ${fmtDate(state.employee.fortnightFrom)} to ${fmtDate(state.employee.fortnightTo)}`,
-employee_name: state.employee.name,
-fortnight:     `${fmtDate(state.employee.fortnightFrom)} to ${fmtDate(state.employee.fortnightTo)}`,
+state = { emp:{ name:cfg.name||’’, fnFrom:ns, fnTo:’’ }, days:[], expenses:[], mileage:[], allowances:[] };
+
+document.getElementById(‘emp-name’).value = cfg.name || ‘’;
+document.getElementById(‘fn-start’).value = ns;
+document.getElementById(‘day-rows’).innerHTML = ‘’;
+hide(‘hours-card’);
+document.getElementById(‘fn-end-display’).textContent = ‘Select a start date above’;
+
+if (ns) {
+var end = localDate(ns);
+end.setDate(end.getDate() + 13);
+state.emp.fnTo = isoDate(end);
+document.getElementById(‘fn-end-display’).textContent = auDate(state.emp.fnTo) + ’ (Sunday)’;
+buildDays();
+toast(’📅 Next fortnight loaded: ’ + auDate(ns), ‘ok’);
+}
+
+renderExpenses(); renderMileage(); renderAllowances();
+closeSuccess();
+showTab(1);
+updateHeader();
+}
+
+/* ─── EMAILJS ────────────────────────────────────── */
+function sendEmail(pdfB64, filename, onOk, onErr) {
+var expTotal = state.expenses.reduce(function(s,e)  { return s + e.amount; }, 0);
+var milTotal = state.mileage.reduce(function(s,m)   { return s + m.total;  }, 0);
+var allTotal = state.allowances.reduce(function(s,a){ return s + a.amount; }, 0);
+var grand    = expTotal + milTotal + allTotal;
+var totalHrs = state.days.reduce(function(s,d) { return s + d.hours; }, 0);
+
+emailjs.init(cfg.ejsKey);
+emailjs.send(cfg.ejsSvc, cfg.ejsTpl, {
+to_email:      cfg.emailTo,
+cc_email:      cfg.emailCc,
+subject:       ’Timesheet — ’ + state.emp.name + ’ — ’ + auDate(state.emp.fnFrom) + ’ to ’ + auDate(state.emp.fnTo),
+employee_name: state.emp.name,
+fortnight:     auDate(state.emp.fnFrom) + ’ to ’ + auDate(state.emp.fnTo),
 total_hours:   totalHrs.toFixed(1),
 grand_total:   ‘$’ + grand.toFixed(2),
 pdf_name:      filename,
-pdf_data:      pdfBase64,
-message:       `Timesheet for ${state.employee.name}\nFortnight: ${fmtDate(state.employee.fortnightFrom)} – ${fmtDate(state.employee.fortnightTo)}\nTotal Hours: ${totalHrs.toFixed(1)}\nExpenses: $${expTotal.toFixed(2)}\nMileage: $${milTotal.toFixed(2)}\nAllowances: $${allTotal.toFixed(2)}\nGrand Total: $${grand.toFixed(2)}`
-});
-
-if (result.status !== 200) throw new Error(’EmailJS returned status ’ + result.status);
+pdf_data:      pdfB64,
+message:       ’Timesheet for ’ + state.emp.name + ‘\n’ +
+’Fortnight: ’ + auDate(state.emp.fnFrom) + ’ to ’ + auDate(state.emp.fnTo) + ‘\n’ +
+’Total Hours: ’ + totalHrs.toFixed(1) + ‘\n’ +
+‘Expenses: $’ + expTotal.toFixed(2) + ‘\n’ +
+‘Mileage: $’ + milTotal.toFixed(2) + ‘\n’ +
+‘Allowances: $’ + allTotal.toFixed(2) + ‘\n’ +
+‘Grand Total: $’ + grand.toFixed(2)
+}).then(function(r) {
+if (r.status === 200) onOk(); else onErr(’status ’ + r.status);
+}).catch(function(e) { onErr(e.text || String(e)); });
 }
 
-function blobToBase64(blob) {
-return new Promise((res, rej) => {
-const r = new FileReader();
-r.onload  = () => res(r.result.split(’,’)[1]);
-r.onerror = rej;
-r.readAsDataURL(blob);
-});
+/* ─── MAILTO FALLBACK ────────────────────────────── */
+function openMail(filename) {
+var to      = document.getElementById(‘email-to’).value;
+var cc      = document.getElementById(‘email-cc’).value;
+var name    = state.emp.name || ‘Employee’;
+var expT    = state.expenses.reduce(function(s,e)  { return s + e.amount; }, 0);
+var milT    = state.mileage.reduce(function(s,m)   { return s + m.total;  }, 0);
+var allT    = state.allowances.reduce(function(s,a){ return s + a.amount; }, 0);
+var hrs     = state.days.reduce(function(s,d) { return s + d.hours; }, 0);
+
+var subj = encodeURIComponent(’Timesheet & Expenses — ’ + name + ’ — ’ + auDate(state.emp.fnFrom) + ’ to ’ + auDate(state.emp.fnTo));
+var body = encodeURIComponent(
+‘Hi,\n\nPlease find attached my timesheet submission.\n\n’ +
+’Employee:    ’ + name + ‘\n’ +
+’Fortnight:   ’ + auDate(state.emp.fnFrom) + ’ to ’ + auDate(state.emp.fnTo) + ‘\n’ +
+‘Hours:       ’ + hrs.toFixed(1) + ’ hrs\n’ +
+‘Expenses:    $’ + expT.toFixed(2) + ‘\n’ +
+‘Mileage:     $’ + milT.toFixed(2) + ‘\n’ +
+‘Allowances:  $’ + allT.toFixed(2) + ‘\n’ +
+‘TOTAL:       $’ + (expT+milT+allT).toFixed(2) + ‘\n\n’ +
+’Please attach the file: ’ + filename + ‘\n\n’ +
+‘Regards,\n’ + name
+);
+
+var url = ‘mailto:’ + to + ‘?subject=’ + subj + ‘&body=’ + body;
+if (cc) url += ‘&cc=’ + encodeURIComponent(cc);
+window.location.href = url;
 }
 
-/* ─────────────────────────────────────────────────────
-PDF GENERATION
-Returns { doc, blob, filename } so we can use both
-the jsPDF doc object (.save() for iOS) and the raw
-blob (for EmailJS / Web Share API).
-───────────────────────────────────────────────────── */
-async function generatePDF() {
-const { jsPDF } = window.jspdf;
-const doc = new jsPDF({ orientation:‘portrait’, unit:‘mm’, format:‘a4’ });
+/* ─── PDF GENERATION ─────────────────────────────── */
+function makePDF() {
+var jsPDF = window.jspdf.jsPDF;
+var doc   = new jsPDF({ orientation:‘portrait’, unit:‘mm’, format:‘a4’ });
+var W = 210, M = 14, y = M;
 
-const W = 210, M = 14;
-let y = M;
+var sp  = function(n) { y += (n||5); };
+var chk = function() { if (y > 272) { doc.addPage(); y = M; } };
 
-const sp  = (n=5) => { y += n; };
-const chk = () => { if (y > 272) { doc.addPage(); y = M; } };
-
-const secHdr = label => {
+var secHdr = function(label) {
 chk();
-doc.setFillColor(15,31,53);
-doc.rect(M, y-4, W-M*2, 8, ‘F’);
+doc.setFillColor(15,31,53); doc.rect(M, y-4, W-M*2, 8, ‘F’);
 doc.setFontSize(9); doc.setFont(‘helvetica’,‘bold’); doc.setTextColor(255,255,255);
 doc.text(label.toUpperCase(), M+3, y);
 y += 7;
 };
 
-// Cover header
+/* Header */
 doc.setFillColor(15,31,53); doc.rect(0,0,W,30,‘F’);
 doc.setFillColor(245,158,11); doc.rect(0,30,W,3,‘F’);
 doc.setFontSize(20); doc.setFont(‘helvetica’,‘bold’); doc.setTextColor(255,255,255);
@@ -974,26 +938,26 @@ doc.setFontSize(9); doc.setFont(‘helvetica’,‘normal’); doc.setTextColor(
 doc.text(’Timesheet & Expense Submission  ·  ’ + new Date().toLocaleString(‘en-AU’), M, 23);
 y = 42;
 
-// Employee summary box
-const totalHrs = state.dailyHours.reduce((s,d) => s+d.hours, 0);
-const expTotal = state.expenses.reduce((s,e) => s+e.amount, 0);
-const milTotal = state.mileage.reduce((s,m) => s+m.total, 0);
-const allTotal = state.allowances.reduce((s,a) => s+a.amount, 0);
-const grand    = expTotal + milTotal + allTotal;
+var expT = state.expenses.reduce(function(s,e)  { return s + e.amount; }, 0);
+var milT = state.mileage.reduce(function(s,m)   { return s + m.total;  }, 0);
+var allT = state.allowances.reduce(function(s,a){ return s + a.amount; }, 0);
+var grand = expT + milT + allT;
+var totalHrs = state.days.reduce(function(s,d) { return s + d.hours; }, 0);
 
+/* Employee box */
 doc.setFillColor(240,244,248); doc.roundedRect(M, y-4, W-M*2, 28, 3, 3, ‘F’);
 doc.setFontSize(15); doc.setFont(‘helvetica’,‘bold’); doc.setTextColor(15,31,53);
-doc.text(state.employee.name || ‘Unknown’, M+4, y+4);
+doc.text(state.emp.name || ‘Unknown’, M+4, y+4);
 doc.setFontSize(9); doc.setFont(‘helvetica’,‘normal’); doc.setTextColor(74,90,110);
-doc.text(`Fortnight: ${fmtDate(state.employee.fortnightFrom)} to ${fmtDate(state.employee.fortnightTo)}`, M+4, y+12);
+doc.text(‘Fortnight: ’ + auDate(state.emp.fnFrom) + ’ to ’ + auDate(state.emp.fnTo), M+4, y+12);
 doc.setFontSize(13); doc.setFont(‘helvetica’,‘bold’); doc.setTextColor(245,158,11);
-doc.text(’$’+grand.toFixed(2), W-M-4, y+10, {align:‘right’});
+doc.text(’$’ + grand.toFixed(2), W-M-4, y+10, {align:‘right’});
 doc.setFontSize(8); doc.setFont(‘helvetica’,‘normal’); doc.setTextColor(74,90,110);
 doc.text(‘Grand Total’, W-M-4, y+17, {align:‘right’});
-doc.text(`Total Hours: ${totalHrs.toFixed(1)} hrs`, W-M-4, y+4, {align:‘right’});
+doc.text(‘Total Hours: ’ + totalHrs.toFixed(1) + ’ hrs’, W-M-4, y+4, {align:‘right’});
 y += 34;
 
-// Daily hours table
+/* Daily hours */
 secHdr(‘Daily Hours’);
 doc.setFillColor(230,236,244); doc.rect(M, y-3, W-M*2, 7, ‘F’);
 doc.setFontSize(8); doc.setFont(‘helvetica’,‘bold’); doc.setTextColor(74,90,110);
@@ -1001,44 +965,39 @@ doc.text(‘Day’, M+2, y+1); doc.text(‘Date’, M+16, y+1);
 doc.text(‘Type’, M+48, y+1); doc.text(‘Hrs’, M+95, y+1); doc.text(‘Job / Notes’, M+110, y+1);
 y += 10;
 
-state.dailyHours.forEach((d,i) => {
+state.days.forEach(function(d, i) {
 chk();
 if (i%2===0) { doc.setFillColor(248,250,252); doc.rect(M,y-4,W-M*2,7,‘F’); }
 doc.setFontSize(8); doc.setFont(‘helvetica’,‘normal’); doc.setTextColor(15,31,53);
-doc.text(d.day, M+2, y);
-doc.text(fmtDate(d.date), M+16, y);
-doc.text(typeLabel(d.type), M+48, y);
+doc.text(d.dayName, M+2, y);
+doc.text(auDate(d.date), M+16, y);
+doc.text(TYPE_LABELS[d.type] || d.type, M+48, y);
 doc.text(d.hours > 0 ? String(d.hours) : ‘—’, M+95, y);
-doc.text((d.jobNote||’’).substring(0,45), M+110, y);
+doc.text((d.note||’’).substring(0,45), M+110, y);
 y += 7;
 });
 
-// Hours totals row
-const typeMap = {};
-state.dailyHours.forEach(d => { if(d.hours>0) typeMap[d.type]=(typeMap[d.type]||0)+d.hours; });
+/* Hours type totals row */
+var typeMap = {};
+state.days.forEach(function(d) { if(d.hours>0) typeMap[d.type]=(typeMap[d.type]||0)+d.hours; });
 chk(); sp(2);
 doc.setFillColor(15,31,53); doc.rect(M,y-3,W-M*2,8,‘F’);
 doc.setFontSize(9); doc.setFont(‘helvetica’,‘bold’); doc.setTextColor(255,255,255);
 doc.text(‘TOTAL HOURS’, M+2, y+2);
 doc.text(totalHrs.toFixed(1)+’ hrs’, M+95, y+2);
-if (Object.keys(typeMap).length > 1) {
-doc.setFontSize(7); doc.setFont(‘helvetica’,‘normal’);
-doc.text(Object.entries(typeMap).map(([k,v]) => `${typeLabel(k)}: ${v.toFixed(1)}`).join(’  ·  ’), M+110, y+2);
-}
 y += 12;
 
-// Expenses
+/* Expenses */
 if (state.expenses.length) {
 secHdr(‘Expenses’);
-state.expenses.forEach((e,i) => {
+state.expenses.forEach(function(e, i) {
 chk();
 if (i%2===0) { doc.setFillColor(248,250,252); doc.rect(M,y-4,W-M*2,13,‘F’); }
 doc.setFontSize(9); doc.setFont(‘helvetica’,‘bold’); doc.setTextColor(15,31,53);
 doc.text(e.type, M+2, y);
 doc.setFont(‘helvetica’,‘normal’); doc.setFontSize(8); doc.setTextColor(74,90,110);
-doc.text(fmtDate(e.date)+(e.desc?’  ·  ‘+e.desc:’’), M+2, y+5);
-doc.setTextColor(22,163,74);
-doc.text(‘Receipt: ‘+e.receiptName, M+2, y+9);
+doc.text(auDate(e.date)+(e.desc?’  ·  ‘+e.desc:’’), M+2, y+5);
+doc.setTextColor(22,163,74); doc.text(‘Receipt: ‘+e.receiptName, M+2, y+9);
 doc.setFontSize(11); doc.setFont(‘helvetica’,‘bold’); doc.setTextColor(15,31,53);
 doc.text(’$’+e.amount.toFixed(2), W-M-2, y, {align:‘right’});
 y += 15;
@@ -1047,20 +1006,20 @@ chk();
 doc.setFillColor(15,31,53); doc.rect(M,y-3,W-M*2,8,‘F’);
 doc.setFontSize(9); doc.setFont(‘helvetica’,‘bold’); doc.setTextColor(255,255,255);
 doc.text(‘EXPENSES TOTAL’, M+2, y+2);
-doc.text(’$’+expTotal.toFixed(2), W-M-2, y+2, {align:‘right’});
+doc.text(’$’+expT.toFixed(2), W-M-2, y+2, {align:‘right’});
 y += 12;
 }
 
-// Mileage
+/* Mileage */
 if (state.mileage.length) {
 secHdr(‘Mileage’);
-state.mileage.forEach((m,i) => {
+state.mileage.forEach(function(m, i) {
 chk();
 if (i%2===0) { doc.setFillColor(248,250,252); doc.rect(M,y-3,W-M*2,8,‘F’); }
 doc.setFontSize(8); doc.setFont(‘helvetica’,‘normal’); doc.setTextColor(15,31,53);
-doc.text(fmtDate(m.date), M+2, y);
-doc.text(`${m.from} → ${m.to}`, M+24, y);
-doc.text(`${m.km}km @ $${m.rate.toFixed(2)}`, M+120, y);
+doc.text(auDate(m.date), M+2, y);
+doc.text(m.from+’ → ‘+m.to, M+24, y);
+doc.text(m.km+‘km @ $’+m.rate.toFixed(2), M+120, y);
 doc.setFont(‘helvetica’,‘bold’);
 doc.text(’$’+m.total.toFixed(2), W-M-2, y, {align:‘right’});
 y += 8;
@@ -1069,14 +1028,14 @@ chk();
 doc.setFillColor(15,31,53); doc.rect(M,y-3,W-M*2,8,‘F’);
 doc.setFontSize(9); doc.setFont(‘helvetica’,‘bold’); doc.setTextColor(255,255,255);
 doc.text(‘MILEAGE TOTAL’, M+2, y+2);
-doc.text(’$’+milTotal.toFixed(2), W-M-2, y+2, {align:‘right’});
+doc.text(’$’+milT.toFixed(2), W-M-2, y+2, {align:‘right’});
 y += 12;
 }
 
-// Allowances
+/* Allowances */
 if (state.allowances.length) {
 secHdr(‘Allowances’);
-state.allowances.forEach((a,i) => {
+state.allowances.forEach(function(a, i) {
 chk();
 if (i%2===0) { doc.setFillColor(248,250,252); doc.rect(M,y-3,W-M*2,8,‘F’); }
 doc.setFontSize(8); doc.setFont(‘helvetica’,‘normal’); doc.setTextColor(15,31,53);
@@ -1090,384 +1049,265 @@ chk();
 doc.setFillColor(15,31,53); doc.rect(M,y-3,W-M*2,8,‘F’);
 doc.setFontSize(9); doc.setFont(‘helvetica’,‘bold’); doc.setTextColor(255,255,255);
 doc.text(‘ALLOWANCES TOTAL’, M+2, y+2);
-doc.text(’$’+allTotal.toFixed(2), W-M-2, y+2, {align:‘right’});
+doc.text(’$’+allT.toFixed(2), W-M-2, y+2, {align:‘right’});
 y += 12;
 }
 
-// Grand total bar
+/* Grand total */
 chk(); sp(4);
-doc.setFillColor(245,158,11); doc.rect(M,y-5,W-M*2,14,‘F’);
+doc.setFillColor(245,158,11); doc.rect(M, y-5, W-M*2, 14, ‘F’);
 doc.setFontSize(12); doc.setFont(‘helvetica’,‘bold’); doc.setTextColor(15,31,53);
 doc.text(‘GRAND TOTAL’, M+3, y+4);
 doc.text(’$’+grand.toFixed(2), W-M-3, y+4, {align:‘right’});
 y += 18;
 
-// Receipt images — one per page
-for (const e of state.expenses) {
-if (e.receiptData && e.receiptType?.startsWith(‘image/’)) {
+/* Receipt images */
+state.expenses.forEach(function(e) {
+if (e.receiptData && e.receiptType && e.receiptType.indexOf(‘image’) === 0) {
 doc.addPage(); y = M;
 doc.setFillColor(15,31,53); doc.rect(0,0,W,18,‘F’);
 doc.setFillColor(245,158,11); doc.rect(0,18,W,2,‘F’);
 doc.setFontSize(9); doc.setFont(‘helvetica’,‘bold’); doc.setTextColor(255,255,255);
-doc.text(`RECEIPT: ${e.type}  ·  ${fmtDate(e.date)}  ·  $${e.amount.toFixed(2)}`, M, 12);
-y = 26;
+doc.text(‘RECEIPT: ‘+e.type+’  ·  ‘+auDate(e.date)+’  ·  $’+e.amount.toFixed(2), M, 12);
 try {
-const fmt = e.receiptType.includes(‘png’) ? ‘PNG’ : ‘JPEG’;
-doc.addImage(e.receiptData, fmt, M, y, W-M*2, 210);
-} catch {
+var fmt = e.receiptType.indexOf(‘png’) >= 0 ? ‘PNG’ : ‘JPEG’;
+doc.addImage(e.receiptData, fmt, M, 26, W-M*2, 210);
+} catch(err) {
 doc.setTextColor(180,0,0); doc.setFontSize(10);
-doc.text(’Could not embed: ’ + e.receiptName, M, y+10);
+doc.text(’Could not embed: ’+e.receiptName, M, 40);
 }
 }
-}
+});
 
-// Page footers
-const pages = doc.getNumberOfPages();
-for (let p = 1; p <= pages; p++) {
+/* Page footers */
+var pages = doc.getNumberOfPages();
+for (var p = 1; p <= pages; p++) {
 doc.setPage(p);
 doc.setFontSize(7); doc.setFont(‘helvetica’,‘normal’); doc.setTextColor(150,150,150);
 doc.text(
-`Page ${p} of ${pages}  ·  ${state.employee.name}  ·  ${fmtDate(state.employee.fortnightFrom)} – ${fmtDate(state.employee.fortnightTo)}  ·  VB Built FieldSheet`,
-W/2, 292, { align:‘center’ }
+‘Page ‘+p+’ of ‘+pages+’  ·  ‘+state.emp.name+’  ·  ‘+auDate(state.emp.fnFrom)+’ – ‘+auDate(state.emp.fnTo)+’  ·  VB Built FieldSheet’,
+W/2, 292, {align:‘center’}
 );
 }
 
-const filename = generateFilename();
-const blob     = doc.output(‘blob’);
-return { doc, blob, filename };
+return { doc: doc, blob: doc.output(‘blob’) };
 }
 
-function generateFilename() {
-const name = (state.employee.name || ‘Employee’).replace(/\s+/g, ‘_’);
-const from = state.employee.fortnightFrom.replace(/-/g, ‘’);
-const to   = state.employee.fortnightTo.replace(/-/g, ‘’);
-return `VBBuilt_FieldSheet_${name}_${from}-${to}.pdf`;
+function makeFilename() {
+var name = (state.emp.name || ‘Employee’).replace(/\s+/g, ‘*’);
+var from = state.emp.fnFrom.replace(/-/g, ‘’);
+var to   = state.emp.fnTo.replace(/-/g, ‘’);
+return ’VBBuilt_FieldSheet*’ + name + ‘_’ + from + ‘-’ + to + ‘.pdf’;
 }
 
-/* ─────────────────────────────────────────────────────
-MANUAL EMAIL FALLBACK
-───────────────────────────────────────────────────── */
-function openEmailClient(filename) {
-const emailTo  = document.getElementById(‘email-to’).value;
-const emailCc  = document.getElementById(‘email-cc’).value;
-const name     = state.employee.name || ‘Employee’;
-const totalHrs = state.dailyHours.reduce((s,d) => s+d.hours, 0);
-const expT     = state.expenses.reduce((s,e) => s+e.amount, 0);
-const milT     = state.mileage.reduce((s,m) => s+m.total, 0);
-const allT     = state.allowances.reduce((s,a) => s+a.amount, 0);
-
-const subject = encodeURIComponent(
-`Timesheet & Expenses — ${name} — ${fmtDate(state.employee.fortnightFrom)} to ${fmtDate(state.employee.fortnightTo)}`
-);
-const body = encodeURIComponent(
-`Hi,
-
-Please find attached my timesheet submission.
-
-Employee:   ${name}
-Fortnight:  ${fmtDate(state.employee.fortnightFrom)} to ${fmtDate(state.employee.fortnightTo)}
-Hours:      ${totalHrs.toFixed(1)} hrs
-Expenses:   $${expT.toFixed(2)}
-Mileage:    $${milT.toFixed(2)}
-Allowances: $${allT.toFixed(2)}
-TOTAL:      $${(expT+milT+allT).toFixed(2)}
-
-Please attach the PDF file: ${filename}
-
-Regards,
-${name}`
-);
-
-let url = `mailto:${emailTo}?subject=${subject}&body=${body}`;
-if (emailCc) url += `&cc=${encodeURIComponent(emailCc)}`;
-window.location.href = url;
-}
-
-/* ─────────────────────────────────────────────────────
-START NEW SUBMISSION
-───────────────────────────────────────────────────── */
-function startNewSubmission() {
-const nextStart = settings.lastSubmittedFortnightEnd
-? getNextFortnightStart(settings.lastSubmittedFortnightEnd) : ‘’;
-
-state = {
-employee: { name: settings.name||’’, fortnightFrom: nextStart, fortnightTo: ‘’ },
-dailyHours: [], expenses: [], mileage: [], allowances: []
-};
-
-document.getElementById(‘employee-name’).value  = settings.name || ‘’;
-document.getElementById(‘fortnight-from’).value = nextStart;
-document.getElementById(‘daily-rows-container’).innerHTML = ‘’;
-document.getElementById(‘daily-table-card’).style.display = ‘none’;
-document.getElementById(‘fortnight-to-display’).textContent = ‘Select a start date above’;
-
-if (nextStart) {
-const end = parseLocalDate(nextStart);
-end.setDate(end.getDate() + 13);
-state.employee.fortnightTo = toISO(end);
-document.getElementById(‘fortnight-to-display’).textContent =
-fmtDate(state.employee.fortnightTo) + ’ (Sunday)’;
-buildDailyTable();
-showToast(`📅 Next fortnight: ${fmtDate(nextStart)}`, ‘success’);
-}
-
-renderExpenses(); renderMileage(); renderAllowances();
-document.getElementById(‘success-overlay’).classList.add(‘hidden’);
-gotoStep(‘tab-timesheet’);
-window.scrollTo({ top: 0 });
-updateHeaderStatus();
-}
-
-/* Close success screen without starting a new submission */
-function dismissSuccess() {
-document.getElementById(‘success-overlay’).classList.add(‘hidden’);
-}
-
-/* ─────────────────────────────────────────────────────
-REMINDERS
-───────────────────────────────────────────────────── */
-function scheduleReminder(nextStart, nextEnd) {
-const end = parseLocalDate(nextEnd);
-const remindFrom = new Date(end);
-remindFrom.setDate(end.getDate() - 2);
-localStorage.setItem(‘fs_reminder’, JSON.stringify({
-fortnightStart: nextStart,
-fortnightEnd:   nextEnd,
-remindFrom:     toISO(remindFrom)
-}));
-}
-
-function checkReminder() {
-if (!settings.reminders) return;
-const raw = localStorage.getItem(‘fs_reminder’);
-if (!raw) return;
-try {
-const r     = JSON.parse(raw);
-const today = toISO(new Date());
-if (today >= r.remindFrom && today <= r.fortnightEnd) {
-const days = Math.round((parseLocalDate(r.fortnightEnd) - new Date()) / 86400000);
-const txt  = days <= 0
-? `⏰ Timesheet due today! ${fmtDate(r.fortnightEnd)}`
-: `⏰ Due in ${days} day${days===1?'':'s'} — ${fmtDate(r.fortnightStart)}`;
-document.getElementById(‘reminder-text’).textContent = txt;
-document.getElementById(‘reminder-banner’).classList.remove(‘hidden’);
-setTimeout(setContentMargin, 50);
-}
-} catch {}
-}
-
-function dismissReminder() {
-document.getElementById(‘reminder-banner’).classList.add(‘hidden’);
-setTimeout(setContentMargin, 50);
-}
-
-/* ─────────────────────────────────────────────────────
-SETTINGS
-───────────────────────────────────────────────────── */
+/* ─── SETTINGS ───────────────────────────────────── */
 function openSettings() {
-document.getElementById(‘settings-name’).value         = settings.name || ‘’;
-document.getElementById(‘settings-email-to’).value     = settings.emailTo || ‘’;
-document.getElementById(‘settings-email-cc’).value     = settings.emailCc || ‘’;
-document.getElementById(‘settings-ejs-key’).value      = settings.ejsPublicKey || ‘’;
-document.getElementById(‘settings-ejs-service’).value  = settings.ejsServiceId || ‘’;
-document.getElementById(‘settings-ejs-template’).value = settings.ejsTemplateId || ‘’;
-document.getElementById(‘settings-reminders’).checked  = settings.reminders !== false;
+document.getElementById(‘s-name’).value     = cfg.name    || ‘’;
+document.getElementById(‘s-email-to’).value = cfg.emailTo || ‘’;
+document.getElementById(‘s-email-cc’).value = cfg.emailCc || ‘’;
+document.getElementById(‘s-ejs-key’).value  = cfg.ejsKey  || ‘’;
+document.getElementById(‘s-ejs-svc’).value  = cfg.ejsSvc  || ‘’;
+document.getElementById(‘s-ejs-tpl’).value  = cfg.ejsTpl  || ‘’;
+document.getElementById(‘s-reminders’).checked = cfg.reminders !== false;
 updateEJSStatus();
-document.getElementById(‘settings-overlay’).classList.remove(‘hidden’);
-document.getElementById(‘settings-drawer’).classList.add(‘open’);
+document.getElementById(‘s-overlay’).style.display = ‘block’;
+document.getElementById(‘s-drawer’).classList.add(‘open’);
 }
 
 function closeSettings() {
-document.getElementById(‘settings-drawer’).classList.remove(‘open’);
-setTimeout(() => document.getElementById(‘settings-overlay’).classList.add(‘hidden’), 300);
+document.getElementById(‘s-drawer’).classList.remove(‘open’);
+setTimeout(function() {
+document.getElementById(‘s-overlay’).style.display = ‘none’;
+}, 300);
 }
 
-function saveSettings(silent = false) {
-settings.name          = document.getElementById(‘settings-name’)?.value.trim()         || settings.name;
-settings.emailTo       = document.getElementById(‘settings-email-to’)?.value.trim()     || settings.emailTo;
-settings.emailCc       = document.getElementById(‘settings-email-cc’)?.value.trim()     || ‘’;
-settings.ejsPublicKey  = document.getElementById(‘settings-ejs-key’)?.value.trim()      || settings.ejsPublicKey;
-settings.ejsServiceId  = document.getElementById(‘settings-ejs-service’)?.value.trim()  || settings.ejsServiceId;
-settings.ejsTemplateId = document.getElementById(‘settings-ejs-template’)?.value.trim() || settings.ejsTemplateId;
-settings.reminders     = document.getElementById(‘settings-reminders’)?.checked ?? true;
-
-localStorage.setItem(‘fs_settings’, JSON.stringify(settings));
-
-const nf = document.getElementById(‘employee-name’);
-if (settings.name && !nf.value) nf.value = settings.name;
-
+function saveSettings(silent) {
+cfg.name      = document.getElementById(‘s-name’).value.trim();
+cfg.emailTo   = document.getElementById(‘s-email-to’).value.trim();
+cfg.emailCc   = document.getElementById(‘s-email-cc’).value.trim();
+cfg.ejsKey    = document.getElementById(‘s-ejs-key’).value.trim();
+cfg.ejsSvc    = document.getElementById(‘s-ejs-svc’).value.trim();
+cfg.ejsTpl    = document.getElementById(‘s-ejs-tpl’).value.trim();
+cfg.reminders = document.getElementById(‘s-reminders’).checked;
+saveCfg(false);
+var nf = document.getElementById(‘emp-name’);
+if (cfg.name && !nf.value) nf.value = cfg.name;
 updateEJSStatus();
-updateHeaderStatus();
-if (!silent) { closeSettings(); showToast(‘✅ Settings saved’, ‘success’); }
+updateHeader();
+if (!silent) { closeSettings(); toast(‘✅ Settings saved’, ‘ok’); }
 }
 
-function loadSettings() {
+function saveCfg(silent) {
+/* Also save any runtime-only cfg keys like lastFnEnd */
+localStorage.setItem(‘fs_cfg’, JSON.stringify(cfg));
+if (!silent) toast(‘✅ Settings saved’, ‘ok’);
+}
+
+function loadCfg() {
 try {
-const raw = localStorage.getItem(‘fs_settings’);
-if (raw) settings = { …settings, …JSON.parse(raw) };
-} catch {}
+var raw = localStorage.getItem(‘fs_cfg’);
+if (raw) cfg = Object.assign(cfg, JSON.parse(raw));
+} catch(e) {}
 }
 
 function updateEJSStatus() {
-const el  = document.getElementById(‘emailjs-status’);
+var el  = document.getElementById(‘ejs-status’);
 if (!el) return;
-const key = document.getElementById(‘settings-ejs-key’)?.value.trim();
-const svc = document.getElementById(‘settings-ejs-service’)?.value.trim();
-const tpl = document.getElementById(‘settings-ejs-template’)?.value.trim();
+var key = document.getElementById(‘s-ejs-key’).value.trim();
+var svc = document.getElementById(‘s-ejs-svc’).value.trim();
+var tpl = document.getElementById(‘s-ejs-tpl’).value.trim();
 if (key && svc && tpl) {
 el.className = ‘ejs-status ok’;
 el.textContent = ‘✅ Configured — emails will send automatically’;
 } else if (key || svc || tpl) {
 el.className = ‘ejs-status partial’;
-el.textContent = ‘⚠️ Incomplete — fill all three fields to enable’;
+el.textContent = ‘⚠️ Incomplete — fill all three fields’;
 } else {
 el.className = ‘ejs-status’; el.style.display = ‘none’;
 }
 }
 
-/* ─────────────────────────────────────────────────────
-HEADER STATUS
-───────────────────────────────────────────────────── */
-function updateHeaderStatus() {
-const name = settings.name || state.employee.name || ‘’;
-document.getElementById(‘greeting-text’).textContent =
-name ? ‘Hello, ’ + name.split(’ ’)[0] : ‘Timesheet Portal’;
+/* ─── REMINDERS ──────────────────────────────────── */
+function scheduleReminder(ns, ne) {
+var end = localDate(ne);
+var from = new Date(end);
+from.setDate(end.getDate() - 2);
+localStorage.setItem(‘fs_rem’, JSON.stringify({ ns:ns, ne:ne, from:isoDate(from) }));
+}
 
-const strip = document.getElementById(‘fortnight-strip’);
-const badge = document.getElementById(‘fortnight-badge’);
-if (state.employee.fortnightFrom && state.employee.fortnightTo) {
-badge.textContent = fmtDate(state.employee.fortnightFrom) + ’ – ’ + fmtDate(state.employee.fortnightTo);
-strip.classList.remove(‘hidden’);
+function checkReminder() {
+if (!cfg.reminders) return;
+var raw = localStorage.getItem(‘fs_rem’);
+if (!raw) return;
+try {
+var r     = JSON.parse(raw);
+var today = todayISO();
+if (today >= r.from && today <= r.ne) {
+var days = Math.round((localDate(r.ne) - new Date()) / 86400000);
+var txt  = days <= 0
+? ‘⏰ Timesheet due today! ’ + auDate(r.ne)
+: ‘⏰ Due in ’ + days + ’ day’ + (days===1?’’:‘s’) + ’ — ’ + auDate(r.ns);
+document.getElementById(‘reminder-text’).textContent = txt;
+show(‘reminder-banner’);
+fixMargin();
+}
+} catch(e) {}
+}
+
+function dismissReminder() {
+hide(‘reminder-banner’);
+fixMargin();
+}
+
+/* ─── HEADER ─────────────────────────────────────── */
+function updateHeader() {
+var name = cfg.name || state.emp.name || ‘’;
+document.getElementById(‘greeting’).textContent = name
+? ‘Hello, ’ + name.split(’ ’)[0]
+: ‘Timesheet Portal’;
+
+var strip = document.getElementById(‘fn-strip’);
+if (state.emp.fnFrom && state.emp.fnTo) {
+document.getElementById(‘fn-badge’).textContent =
+auDate(state.emp.fnFrom) + ’ – ’ + auDate(state.emp.fnTo);
+strip.style.display = ‘block’;
 } else {
-strip.classList.add(‘hidden’);
+strip.style.display = ‘none’;
 }
-setTimeout(setContentMargin, 30);
-}
-
-/* ─────────────────────────────────────────────────────
-LOADING OVERLAY
-───────────────────────────────────────────────────── */
-function showLoading(txt = ‘Please wait…’) {
-document.getElementById(‘loading-text’).textContent = txt;
-document.getElementById(‘loading-overlay’).classList.remove(‘hidden’);
-}
-function setLoadingText(txt) { document.getElementById(‘loading-text’).textContent = txt; }
-function hideLoading()       { document.getElementById(‘loading-overlay’).classList.add(‘hidden’); }
-
-/* ─────────────────────────────────────────────────────
-TOAST
-───────────────────────────────────────────────────── */
-let _toastTimer;
-function showToast(msg, type = ‘’) {
-const t = document.getElementById(‘toast’);
-t.textContent = msg;
-t.className = ‘toast’ + (type ? ’ ’ + type : ‘’);
-t.classList.remove(‘hidden’);
-clearTimeout(_toastTimer);
-_toastTimer = setTimeout(() => t.classList.add(‘hidden’), 3500);
+fixMargin();
 }
 
-/* ─────────────────────────────────────────────────────
-UTILITIES
-───────────────────────────────────────────────────── */
-function fmtDate(iso) {
-if (!iso) return ‘—’;
-const [y,m,d] = iso.split(’-’);
-if (!y||!m||!d) return iso;
-return `${d}/${m}/${y}`;
+/* ─── LOADING ────────────────────────────────────── */
+function setLoading(txt) {
+document.getElementById(‘loading-txt’).textContent = txt || ‘Please wait…’;
+document.getElementById(‘loading-overlay’).style.display = ‘flex’;
+}
+function hideLoading() { document.getElementById(‘loading-overlay’).style.display = ‘none’; }
+
+/* ─── TOAST ──────────────────────────────────────── */
+var _tt;
+function toast(msg, type) {
+var el = document.getElementById(‘toast’);
+el.textContent = msg;
+el.className = ‘toast’ + (type ? ’ ’ + type : ‘’);
+el.style.display = ‘block’;
+clearTimeout(_tt);
+_tt = setTimeout(function() { el.style.display = ‘none’; }, 3500);
 }
 
-function parseLocalDate(iso) {
-const [y,m,d] = iso.split(’-’).map(Number);
-return new Date(y, m-1, d);
-}
+/* ─── UTILITIES ──────────────────────────────────── */
+function show(id) { var el = document.getElementById(id); if (el) el.style.display = ‘block’; }
+function hide(id) { var el = document.getElementById(id); if (el) el.style.display = ‘none’; }
 
-function toISO(d) {
-return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-}
-
-function typeLabel(val) {
-return { work:‘Work’, annual:‘Annual Leave’, sick:‘Sick Leave’,
-ph:‘Public Holiday’, rdo:‘RDO / Day Off’, other:‘Other’ }[val] || val;
-}
-
-function escHtml(s) {
+function esc(s) {
 if (!s) return ‘’;
-return s.replace(/&/g,’&’).replace(/</g,’<’).replace(/>/g,’>’)
+return String(s).replace(/&/g,’&’).replace(/</g,’<’).replace(/>/g,’>’)
 .replace(/”/g,’"’).replace(/’/g,’'’);
 }
 
-/* ─────────────────────────────────────────────────────
-INIT
-Written defensively — every async step is wrapped in
-try/catch so one failure never stops the rest.
-The app must always be interactive, even if IndexedDB
-is unavailable (e.g. private browsing on some browsers).
-───────────────────────────────────────────────────── */
+function blobToB64(blob, cb) {
+var r = new FileReader();
+r.onload  = function() { cb(r.result.split(’,’)[1]); };
+r.onerror = function() { cb(’’); };
+r.readAsDataURL(blob);
+}
+
+/* ─── INIT ───────────────────────────────────────── */
 function init() {
-// Step 1 — synchronous setup (always runs, cannot fail)
-loadSettings();
+/* 1. Load saved config */
+loadCfg();
 
-const nf = document.getElementById(‘employee-name’);
-if (settings.name && !nf.value) nf.value = settings.name;
-if (settings.emailTo) document.getElementById(‘email-to’).value = settings.emailTo;
-if (settings.emailCc) document.getElementById(‘email-cc’).value = settings.emailCc;
+/* 2. Pre-fill fields from config */
+if (cfg.name)    document.getElementById(‘emp-name’).value  = cfg.name;
+if (cfg.emailTo) document.getElementById(‘email-to’).value  = cfg.emailTo;
+if (cfg.emailCc) document.getElementById(‘email-cc’).value  = cfg.emailCc;
 
-const today = toISO(new Date());
-document.getElementById(‘exp-date’).value = today;
-document.getElementById(‘mil-date’).value = today;
+/* 3. Default dates */
+var t = todayISO();
+document.getElementById(‘exp-date’).value = t;
+document.getElementById(‘mil-date’).value = t;
 
-// Step 2 — render empty lists immediately so UI is ready
-renderExpenses(); renderMileage(); renderAllowances();
+/* 4. Render empty lists */
+renderExpenses();
+renderMileage();
+renderAllowances();
 
-// Step 3 — set content margin IMMEDIATELY (critical — prevents header overlap)
-initContentMargin();
-window.addEventListener(‘resize’, setContentMargin);
-// Also re-measure after fonts and images have loaded
-window.addEventListener(‘load’, initContentMargin);
+/* 5. FIX MARGIN — must happen before anything else
+Measures header and pushes content below it */
+fixMargin();
+window.addEventListener(‘resize’, fixMargin);
 
-// Step 4 — check reminder (sync, uses localStorage)
+/* 6. Check reminder */
 checkReminder();
 
-// Step 5 — update header text
-updateHeaderStatus();
+/* 7. Update header greeting */
+updateHeader();
 
-// Step 6 — async: load draft and last submission from IndexedDB
-// These run after the UI is already interactive
-loadDraftAsync();
-checkLastSubmissionAsync();
+/* 8. Load draft from IndexedDB (async — does not block UI) */
+loadDraft();
 
-if (!settings.name && !settings.emailTo) {
-setTimeout(() => showToast(‘👋 Welcome! Open ⚙️ Settings to get started’, ‘success’), 900);
-}
-
-console.log(‘VB Built FieldSheet v4 ✅’);
-}
-
-/* Load draft — runs after init, never blocks UI */
-async function loadDraftAsync() {
-try {
-await loadDraft();
-// Re-measure after draft content may have expanded the page
-setTimeout(setContentMargin, 100);
-} catch(e) {
-console.warn(‘Draft load failed:’, e);
-}
-}
-
-/* Check for last submission button — runs after init, never blocks UI */
-async function checkLastSubmissionAsync() {
-try {
-const last = await dbGet(‘submissions’, ‘last’);
-const btn  = document.getElementById(‘load-last-btn’);
-if (last && btn) {
-const when = new Date(last.submittedAt).toLocaleDateString(‘en-AU’);
-btn.textContent = `📂 Load Last Submission (${when})`;
+/* 9. Check for last submission button */
+dbGet(‘last’, function(data) {
+if (data) {
+var btn = document.getElementById(‘load-last-btn’);
+if (btn) {
+var when = new Date(data.at).toLocaleDateString(‘en-AU’);
+btn.textContent = ‘📂 Load Last Submission (’ + when + ‘)’;
 btn.style.display = ‘block’;
 }
-} catch(e) {
-console.warn(‘Last submission check failed:’, e);
 }
+});
+
+/* 10. First-time welcome */
+if (!cfg.name && !cfg.emailTo) {
+setTimeout(function() { toast(‘👋 Welcome! Tap ⚙️ Settings to get started’, ‘ok’); }, 800);
+}
+
+/* Re-measure margin several times to catch any late layout shifts
+(fonts loading, banners appearing, etc.) */
+setTimeout(fixMargin, 200);
+setTimeout(fixMargin, 600);
+setTimeout(fixMargin, 1200);
 }
 
 document.addEventListener(‘DOMContentLoaded’, init);
